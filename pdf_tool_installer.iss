@@ -22,7 +22,7 @@ DisableProgramGroupPage=yes
 ; Installation will go to user's AppData folder which doesn't require admin privileges
 OutputDir=D:\\pdf\\installer_output ; Where the final setup.exe will be saved
 OutputBaseFilename=pdf_tool_setup
-SetupIconFile= ; You can specify an .ico file for your installer icon here if you have one
+SetupIconFile=D:\pdf\Gartoon-Team-Gartoon-Apps-System-software-installer.ico
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
