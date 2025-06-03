@@ -438,6 +438,12 @@ class PDFToolApp:
 
         remove_jpg_button = ttk.Button(buttons_frame, text="Ausgewählte JPG(s) entfernen", command=self._remove_jpg_from_list) # Translated
         remove_jpg_button.pack(side=tk.LEFT, padx=5)
+
+        move_up_jpg_button = ttk.Button(buttons_frame, text="Nach oben", command=self._move_jpg_item_up)
+        move_up_jpg_button.pack(side=tk.LEFT, padx=5)
+
+        move_down_jpg_button = ttk.Button(buttons_frame, text="Nach unten", command=self._move_jpg_item_down)
+        move_down_jpg_button.pack(side=tk.LEFT, padx=5)
         
         options_frame = ttk.Frame(self.jpg_to_pdf_frame) 
         options_frame.pack(padx=10, pady=5, fill="x")
@@ -472,6 +478,44 @@ class PDFToolApp:
             self.jpg_to_pdf_status_label.config(text="Ausgewählte JPG-Datei(en) entfernt.") # Translated
         else:
             messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie JPG-Datei(en) zum Entfernen aus.") # Translated
+
+    def _move_jpg_item_up(self):
+        selected_index = self.jpg_listbox.curselection()
+        if selected_index:
+            index = selected_index[0] # Assuming single selection for simplicity in moving
+            if index > 0:
+                # Swap in the list of paths
+                self.selected_jpg_files[index], self.selected_jpg_files[index-1] = \
+                    self.selected_jpg_files[index-1], self.selected_jpg_files[index]
+                # Swap in the listbox
+                text = self.jpg_listbox.get(index)
+                self.jpg_listbox.delete(index)
+                self.jpg_listbox.insert(index-1, text)
+                self.jpg_listbox.selection_clear(0, tk.END)
+                self.jpg_listbox.selection_set(index-1)
+                self.jpg_listbox.activate(index-1)
+                self.jpg_to_pdf_status_label.config(text="Datei nach oben verschoben.")
+        else:
+            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
+
+    def _move_jpg_item_down(self):
+        selected_index = self.jpg_listbox.curselection()
+        if selected_index:
+            index = selected_index[0] # Assuming single selection
+            if index < self.jpg_listbox.size() - 1:
+                # Swap in the list of paths
+                self.selected_jpg_files[index], self.selected_jpg_files[index+1] = \
+                    self.selected_jpg_files[index+1], self.selected_jpg_files[index]
+                # Swap in the listbox
+                text = self.jpg_listbox.get(index)
+                self.jpg_listbox.delete(index)
+                self.jpg_listbox.insert(index+1, text)
+                self.jpg_listbox.selection_clear(0, tk.END)
+                self.jpg_listbox.selection_set(index+1)
+                self.jpg_listbox.activate(index+1)
+                self.jpg_to_pdf_status_label.config(text="Datei nach unten verschoben.")
+        else:
+            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
 
     def _execute_jpg_to_pdf(self):
         if not self.selected_jpg_files:
