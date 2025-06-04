@@ -1,167 +1,263 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from PyPDF2 import PdfWriter
 import os
-from tkinterdnd2 import DND_FILES
-from utils.common_helpers import parse_dropped_files
+from PyPDF2 import PdfWriter
+from PySide6.QtWidgets import (
+    QWidget, QPushButton, QLabel, QListWidget, QListWidgetItem,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QGroupBox,
+    QApplication
+)
+from PySide6.QtCore import Qt, QUrl
+# We might need to adjust parse_dropped_files or handle MIME data directly
+# from utils.common_helpers import parse_dropped_files 
 
-class MergeTab:
-    def __init__(self, parent_notebook, app_root):
-        self.app_root = app_root  # For messagebox, update_idletasks
-        self.merge_frame = ttk.Frame(parent_notebook)
+class MergeTab(QWidget):
+    def __init__(self, app_root=None):
+        super().__init__()
+        self.app_root = app_root # Main window reference, if needed
+        self.selected_merge_files = [] # List to store full paths
+
+        self._init_ui()
+
+    def _init_ui(self):
+        main_layout = QVBoxLayout(self)
+
+        # --- Controls Group ---
+        controls_group = QGroupBox("Dateien zum Zusammenführen")
+        controls_group_layout = QHBoxLayout(controls_group) # Main layout for the group
+
+        # Listbox for files
+        self.merge_list_widget = QListWidget()
+        # Enable both internal move (for reordering) and external drops (for adding files)
+        self.merge_list_widget.setDragDropMode(QListWidget.DragDropMode.DragDrop)
+        self.merge_list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.merge_list_widget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         
-        self.selected_merge_files = []
-        self.merge_listbox = None
-        self.merge_status_label = None
+        # Enable accepting drops from external sources
+        self.merge_list_widget.setAcceptDrops(True)
         
-        self._create_merge_widgets()
-
-    def get_frame(self):
-        return self.merge_frame
-
-    def _create_merge_widgets(self):
-        # Frame for file list and controls
-        controls_frame = ttk.LabelFrame(self.merge_frame, text="Dateien zum Zusammenführen")
-        controls_frame.pack(padx=10, pady=10, fill="x")
-
-        # Listbox to display selected files
-        self.merge_listbox = tk.Listbox(controls_frame, selectmode=tk.SINGLE, height=10)
-        self.merge_listbox.pack(side=tk.LEFT, fill="both", expand=True, padx=5, pady=5)
-
-        # Scrollbar for the listbox
-        scrollbar = ttk.Scrollbar(controls_frame, orient="vertical", command=self.merge_listbox.yview)
-        scrollbar.pack(side=tk.LEFT, fill="y", pady=5)
-        self.merge_listbox.config(yscrollcommand=scrollbar.set)
-
-        # Frame for buttons
-        buttons_frame = ttk.Frame(controls_frame)
-        buttons_frame.pack(side=tk.LEFT, fill="y", padx=5)
-
-        add_button = ttk.Button(buttons_frame, text="PDF hinzufügen", command=self._add_pdf_to_merge_list)
-        add_button.pack(fill="x", pady=2)
-
-        remove_button = ttk.Button(buttons_frame, text="Auswahl entfernen", command=self._remove_pdf_from_merge_list)
-        remove_button.pack(fill="x", pady=2)
-
-        move_up_button = ttk.Button(buttons_frame, text="Nach oben", command=self._move_merge_item_up)
-        move_up_button.pack(fill="x", pady=2)
-
-        move_down_button = ttk.Button(buttons_frame, text="Nach unten", command=self._move_merge_item_down)
-        move_down_button.pack(fill="x", pady=2)
+        # Connect to model changes to keep internal list synchronized
+        self.merge_list_widget.model().rowsMoved.connect(self._on_rows_moved)
         
-        # Register merge_listbox for drag and drop
-        self.merge_listbox.drop_target_register(DND_FILES)
-        self.merge_listbox.dnd_bind('<<Drop>>', self._handle_merge_drop)
+        # Override drag and drop events for external file drops
+        self.merge_list_widget.dragEnterEvent = self._drag_enter_event
+        self.merge_list_widget.dragMoveEvent = self._drag_move_event
+        self.merge_list_widget.dropEvent = self._drop_event
         
-        # Merge button and status
-        action_frame = ttk.Frame(self.merge_frame)
-        action_frame.pack(padx=10, pady=10, fill="x")
+        controls_group_layout.addWidget(self.merge_list_widget, 1) # Add stretch factor
 
-        merge_button = ttk.Button(action_frame, text="PDFs zusammenführen und speichern", command=self._execute_merge_pdfs)
-        merge_button.pack(pady=5)
+        # Buttons for list management
+        list_buttons_layout = QVBoxLayout()
+        self.add_button = QPushButton("PDF hinzufügen")
+        self.add_button.clicked.connect(self._add_pdf_to_merge_list)
+        list_buttons_layout.addWidget(self.add_button)
 
-        self.merge_status_label = ttk.Label(action_frame, text="")
-        self.merge_status_label.pack(pady=5)
+        self.remove_button = QPushButton("Auswahl entfernen")
+        self.remove_button.clicked.connect(self._remove_pdf_from_merge_list)
+        list_buttons_layout.addWidget(self.remove_button)
+
+        self.move_up_button = QPushButton("Nach oben")
+        self.move_up_button.clicked.connect(self._move_merge_item_up)
+        list_buttons_layout.addWidget(self.move_up_button)
+
+        self.move_down_button = QPushButton("Nach unten")
+        self.move_down_button.clicked.connect(self._move_merge_item_down)
+        list_buttons_layout.addWidget(self.move_down_button)
+        list_buttons_layout.addStretch()
+
+        controls_group_layout.addLayout(list_buttons_layout)
+        main_layout.addWidget(controls_group)
+
+        # --- Action Area ---
+        action_layout = QVBoxLayout()
+        self.merge_button = QPushButton("PDFs zusammenführen und speichern")
+        self.merge_button.clicked.connect(self._execute_merge_pdfs)
+        action_layout.addWidget(self.merge_button)
+
+        self.merge_status_label = QLabel("")
+        self.merge_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        action_layout.addWidget(self.merge_status_label)
+        
+        main_layout.addLayout(action_layout)
+        main_layout.addStretch() # Pushes everything to the top if vertical space is available
+
+        self.setLayout(main_layout)
+
+    def _on_rows_moved(self, parent, start, end, destination, row):
+        """Called when rows are moved via drag and drop. Updates internal file list."""
+        self._update_internal_file_list_from_widget()
+        self.merge_status_label.setText("Dateien neu sortiert.")
+
+    def _update_internal_file_list_from_widget(self):
+        """Synchronizes self.selected_merge_files based on QListWidget items order and data."""
+        self.selected_merge_files.clear()
+        for i in range(self.merge_list_widget.count()):
+            item = self.merge_list_widget.item(i)
+            self.selected_merge_files.append(item.data(Qt.ItemDataRole.UserRole)) # Store full path in UserRole
+
+    def _add_files_to_list_widget(self, file_paths):
+        added_count = 0
+        for file_path in file_paths:
+            if file_path.lower().endswith(".pdf"):
+                # Check if the full path is already in our internal list
+                if not any(file_path == existing_fp for existing_fp in self.selected_merge_files):
+                    item = QListWidgetItem(os.path.basename(file_path))
+                    item.setData(Qt.ItemDataRole.UserRole, file_path) # Store full path
+                    self.merge_list_widget.addItem(item)
+                    self.selected_merge_files.append(file_path) # Keep internal list in sync
+                    added_count += 1
+        if added_count > 0:
+            self.merge_status_label.setText(f"{added_count} PDF-Datei(en) hinzugefügt.")
+        else:
+            self.merge_status_label.setText("Keine neuen PDF-Dateien hinzugefügt oder bereits vorhanden.")
 
     def _add_pdf_to_merge_list(self):
-        files = filedialog.askopenfilenames(
-            title="PDF-Dateien auswählen",
-            filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*"))
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "PDF-Dateien auswählen",
+            "",
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
         )
         if files:
-            for file_path in files:
-                if file_path not in self.selected_merge_files:
-                    self.selected_merge_files.append(file_path)
-                    self.merge_listbox.insert(tk.END, os.path.basename(file_path))
-            self.merge_status_label.config(text=f"{len(files)} Datei(en) hinzugefügt.")
+            self._add_files_to_list_widget(files)
 
     def _remove_pdf_from_merge_list(self):
-        selected_index = self.merge_listbox.curselection()
-        if selected_index:
-            index = selected_index[0]
-            del self.selected_merge_files[index]
-            self.merge_listbox.delete(index)
-            self.merge_status_label.config(text="Datei entfernt.")
+        current_item = self.merge_list_widget.currentItem()
+        if current_item:
+            row = self.merge_list_widget.row(current_item)
+            self.merge_list_widget.takeItem(row)
+            self._update_internal_file_list_from_widget() # Resync internal list
+            self.merge_status_label.setText("Datei entfernt.")
         else:
-            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Entfernen aus.")
+            QMessageBox.warning(self, "Keine Auswahl", "Bitte wählen Sie eine Datei zum Entfernen aus.")
 
     def _move_merge_item_up(self):
-        selected_index = self.merge_listbox.curselection()
-        if selected_index:
-            index = selected_index[0]
-            if index > 0:
-                self.selected_merge_files[index], self.selected_merge_files[index-1] = self.selected_merge_files[index-1], self.selected_merge_files[index]
-                text = self.merge_listbox.get(index)
-                self.merge_listbox.delete(index)
-                self.merge_listbox.insert(index-1, text)
-                self.merge_listbox.selection_set(index-1)
-                self.merge_status_label.config(text="Datei nach oben verschoben.")
+        current_item = self.merge_list_widget.currentItem()
+        if current_item:
+            row = self.merge_list_widget.row(current_item)
+            if row > 0:
+                # QListWidget's internal drag and drop handles visual reordering if enabled.
+                # For manual control or if InternalMove is not sufficient for all cases:
+                item = self.merge_list_widget.takeItem(row)
+                self.merge_list_widget.insertItem(row - 1, item)
+                self.merge_list_widget.setCurrentItem(item)
+                self._update_internal_file_list_from_widget() # Resync
+                self.merge_status_label.setText("Datei nach oben verschoben.")
         else:
-            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
+            QMessageBox.warning(self, "Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
 
     def _move_merge_item_down(self):
-        selected_index = self.merge_listbox.curselection()
-        if selected_index:
-            index = selected_index[0]
-            if index < self.merge_listbox.size() - 1:
-                self.selected_merge_files[index], self.selected_merge_files[index+1] = self.selected_merge_files[index+1], self.selected_merge_files[index]
-                text = self.merge_listbox.get(index)
-                self.merge_listbox.delete(index)
-                self.merge_listbox.insert(index+1, text)
-                self.merge_listbox.selection_set(index+1)
-                self.merge_status_label.config(text="Datei nach unten verschoben.")
+        current_item = self.merge_list_widget.currentItem()
+        if current_item:
+            row = self.merge_list_widget.row(current_item)
+            if row < self.merge_list_widget.count() - 1:
+                item = self.merge_list_widget.takeItem(row)
+                self.merge_list_widget.insertItem(row + 1, item)
+                self.merge_list_widget.setCurrentItem(item)
+                self._update_internal_file_list_from_widget() # Resync
+                self.merge_status_label.setText("Datei nach unten verschoben.")
         else:
-            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
+            QMessageBox.warning(self, "Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
 
     def _execute_merge_pdfs(self):
+        self._update_internal_file_list_from_widget() # Ensure list is up-to-date from widget order
         if not self.selected_merge_files or len(self.selected_merge_files) < 2:
-            messagebox.showwarning("Nicht genügend Dateien", "Bitte wählen Sie mindestens zwei PDF-Dateien zum Zusammenführen aus.")
+            QMessageBox.warning(self, "Nicht genügend Dateien", "Bitte wählen Sie mindestens zwei PDF-Dateien zum Zusammenführen aus.")
             return
 
-        output_filename = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*")),
-            title="Zusammengeführte PDF speichern unter"
+        # Suggest a default filename, e.g., based on the first PDF or a generic name
+        default_save_name = "merged_document.pdf"
+        if self.selected_merge_files:
+             first_file_dir = os.path.dirname(self.selected_merge_files[0])
+             output_path_suggestion = os.path.join(first_file_dir, default_save_name)
+        else:
+            output_path_suggestion = default_save_name
+
+        output_filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Zusammengeführte PDF speichern unter",
+            output_path_suggestion,
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
         )
 
         if not output_filename:
-            self.merge_status_label.config(text="Zusammenführen abgebrochen.")
+            self.merge_status_label.setText("Zusammenführen abgebrochen.")
             return
 
         pdf_writer = PdfWriter()
-        
         try:
-            self.merge_status_label.config(text="Führe PDFs zusammen...")
-            self.app_root.update_idletasks() 
+            self.merge_status_label.setText("Führe PDFs zusammen...")
+            QApplication.processEvents() # Allow UI to update status label
 
             for filename in self.selected_merge_files:
-                pdf_writer.append(filename)
+                try:
+                    pdf_writer.append(filename)
+                except Exception as append_error:
+                    # Log the specific file that caused an error and skip it or halt
+                    print(f"Error appending file {filename}: {append_error}")
+                    QMessageBox.critical(self, "Fehler beim Anhängen", f"Fehler beim Anhängen der Datei: {os.path.basename(filename)}\n{append_error}")
+                    # Optionally re-raise or return if one file error should stop the whole process
+                    # For now, we'll continue with other files if possible, but the writer might be in a bad state.
+                    # A safer approach might be to return here or clear the writer.
+                    self.merge_status_label.setText(f"Fehler bei Datei: {os.path.basename(filename)}")
+                    return # Stop merging on first error
             
+            if not pdf_writer.pages: # Check if any pages were actually added
+                QMessageBox.warning(self, "Keine Seiten", "Keine Seiten zum Zusammenführen vorhanden. Überprüfen Sie die Quelldateien.")
+                self.merge_status_label.setText("Keine Seiten zum Zusammenführen.")
+                return
+
             with open(output_filename, 'wb') as out:
                 pdf_writer.write(out)
             
-            pdf_writer.close() 
-            messagebox.showinfo("Erfolg", f"PDFs erfolgreich zusammengeführt in {os.path.basename(output_filename)}")
-            self.merge_status_label.config(text="Zusammenführen erfolgreich!")
+            # pdf_writer.close() # Not typically needed for PyPDF2.PdfWriter
+            QMessageBox.information(self, "Erfolg", f"PDFs erfolgreich zusammengeführt in {os.path.basename(output_filename)}")
+            self.merge_status_label.setText("Zusammenführen erfolgreich!")
+            
+            # Clear the list after successful merge
             self.selected_merge_files.clear()
-            self.merge_listbox.delete(0, tk.END)
-        except Exception as e:
-            messagebox.showerror("Fehler beim Zusammenführen", f"Ein Fehler ist aufgetreten: {e}")
-            self.merge_status_label.config(text="Fehler beim Zusammenführen.")
+            self.merge_list_widget.clear()
 
-    def _handle_merge_drop(self, event):
-        dropped_files = parse_dropped_files(event.data)
-        added_count = 0
-        if dropped_files:
-            for file_path in dropped_files:
-                if file_path.lower().endswith(".pdf"):
-                    if file_path not in self.selected_merge_files:
-                        self.selected_merge_files.append(file_path)
-                        self.merge_listbox.insert(tk.END, os.path.basename(file_path))
-                        added_count += 1
-            if added_count > 0:
-                self.merge_status_label.config(text=f"{added_count} PDF-Datei(en) per Drag & Drop hinzugefügt.")
-            else:
-                self.merge_status_label.config(text="Keine neuen PDF-Dateien per Drag & Drop hinzugefügt.")
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler beim Zusammenführen", f"Ein Fehler ist aufgetreten: {e}")
+            self.merge_status_label.setText(f"Fehler: {e}")
+
+    # --- Drag and Drop Event Handlers ---
+    def _drag_enter_event(self, event):
+        # Check if the dropped data contains URLs (file paths) - for external drops
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction() # Accept the drop action if it contains URLs
+        # Also allow internal moves
+        elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+            event.acceptProposedAction()
         else:
-            self.merge_status_label.config(text="Keine Dateien im Drop-Event gefunden.") 
+            event.ignore() # Ignore otherwise
+
+    def _drag_move_event(self, event):
+        # This event is similar to dragEnterEvent; often, the same logic applies
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def _drop_event(self, event):
+        # Handle external file drops
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            urls = event.mimeData().urls()
+            dropped_files = []
+            for url in urls:
+                if url.isLocalFile():
+                    dropped_files.append(url.toLocalFile())
+            
+            if dropped_files:
+                self._add_files_to_list_widget(dropped_files)
+            else:
+                self.merge_status_label.setText("Keine lokalen Dateien im Drop-Event gefunden.")
+        
+        # Handle internal moves (let the default implementation handle it)
+        elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+            # Call the parent's dropEvent to handle internal moves
+            QListWidget.dropEvent(self.merge_list_widget, event)
+        else:
+            event.ignore() 

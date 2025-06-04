@@ -1,65 +1,90 @@
-import tkinter as tk
-from tkinter import ttk # Keep ttk for Notebook
-# from tkinter import filedialog, messagebox # No longer directly used in PDFToolApp
-# from PyPDF2 import PdfReader # No longer directly used in PDFToolApp
-# from PIL import Image, UnidentifiedImageError, ImageSequence # No longer directly used
-# import os # No longer directly used in PDFToolApp
-from tkinterdnd2 import TkinterDnD # TkinterDnD.Tk() is used at the end
-
-# --- Library Imports for specific conversions (Most are now in ConvertTab or other tabs) ---
-from pillow_heif import register_heif_opener # Call once at app start
-
-# --- Custom Module Imports ---
-from gui.merge_tab import MergeTab
-from gui.split_tab import SplitTab
-from gui.delete_tab import DeleteTab
-from gui.convert_tab import ConvertTab # Import ConvertTab
-# No utils needed directly in PDFToolApp anymore
-# --- End Custom Module Imports ---
+import sys
+from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget, QWidget
+from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
 
 # --- pillow-heif Import and registration ---
-register_heif_opener() # Call once to enable HEIC/HEIF support in Pillow
+# This is still relevant if any part of your PDF processing (e.g. image conversion) uses Pillow
+from pillow_heif import register_heif_opener
+register_heif_opener()
 # --- End pillow-heif ---
 
-# --- Constants formerly in PDFToolApp are now moved to gui.convert_tab or utils.constants ---
-# All constants like SUPPORTED_FILE_TYPES, IMAGE_EXTENSIONS, etc., are removed from here.
+# --- qdarktheme Import ---
+import qdarktheme
+# --- End qdarktheme ---
 
-class PDFToolApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("PDF & Datei Werkzeug")
-        self.root.geometry("800x600")
+# --- Custom Module Imports (will be updated as we refactor them) ---
+# We will assume these are (or will be) PySide6 QWidget classes
+from gui.merge_tab import MergeTab
+from gui.split_tab import SplitTab
+from gui.delete_tab import DeleteTab # This is already refactored
+from gui.convert_tab import ConvertTab
 
-        # Main notebook for tabs
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(expand=True, fill='both', padx=10, pady=10)
+# Modern dark theme stylesheet (No longer needed, will be removed or commented)
+# DARK_STYLE = \"\"\"
+# QMainWindow {
+# ... (rest of the old DARK_STYLE string) ...
+# }
+# \"\"\"
 
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("PDF & Datei Werkzeug - Light Mode") # Updated title
+        self.setGeometry(100, 100, 1000, 700)
+
+        # Set Window Icon
+        # Make sure 'Graphicloads-Filetype-Pdf.ico' is in the same directory as pdf_tool.py
+        # or provide the correct path.
+        try:
+            self.setWindowIcon(QIcon("Graphicloads-Filetype-Pdf.ico"))
+        except Exception as e:
+            print(f"Could not load window icon: {e}")
+
+        self.tab_widget = QTabWidget()
+        self.setCentralWidget(self.tab_widget)
+
+        self._create_tabs()
+
+    def _create_tabs(self):
         # Instantiate and add tabs
-        self.merge_tab_instance = MergeTab(self.notebook, self.root)
-        self.notebook.add(self.merge_tab_instance.get_frame(), text='PDFs zusammenführen')
+        # The 'app_root' argument might not be needed or will be handled differently in Qt.
+        # For now, we pass 'self' if a tab needs a reference to the main window.
 
-        self.split_tab_instance = SplitTab(self.notebook, self.root)
-        self.notebook.add(self.split_tab_instance.get_frame(), text='PDF Seiten extrahieren')
+        self.delete_tab_instance = DeleteTab(app_root=self) # Already refactored
+        self.tab_widget.addTab(self.delete_tab_instance, "PDF Seiten löschen")
+        
+        # All tabs are now properly refactored to PySide6
+        try:
+            self.merge_tab_instance = MergeTab(app_root=self)
+            self.tab_widget.addTab(self.merge_tab_instance, "PDFs zusammenführen")
+        except Exception as e:
+            print(f"Error loading MergeTab: {e}")
 
-        self.delete_tab_instance = DeleteTab(self.notebook, self.root)
-        self.notebook.add(self.delete_tab_instance.get_frame(), text='PDF Seiten löschen')
+        try:
+            self.split_tab_instance = SplitTab(app_root=self)
+            self.tab_widget.addTab(self.split_tab_instance, "PDF Seiten extrahieren")
+        except Exception as e:
+            print(f"Error loading SplitTab: {e}")
 
-        self.convert_tab_instance = ConvertTab(self.notebook, self.root) # Instantiate ConvertTab
-        self.notebook.add(self.convert_tab_instance.get_frame(), text='Dateien zu PDF konvertieren') # Add ConvertTab's frame
+        try:
+            self.convert_tab_instance = ConvertTab(app_root=self)
+            self.tab_widget.addTab(self.convert_tab_instance, "Dateien zu PDF konvertieren")
+        except Exception as e:
+            print(f"Error loading ConvertTab: {e}")
 
-        # All attributes related to specific tabs (e.g., self.selected_files_for_conversion, 
-        # self.split_input_pdf_path, etc.) have been moved to their respective tab classes.
 
-    # All methods related to merge, split, delete, and convert functionalities
-    # (e.g., _create_merge_widgets, _execute_split_pdf, _add_image_to_pdf, etc.)
-    # have been moved to their respective tab classes (MergeTab, SplitTab, DeleteTab, ConvertTab)
-    # or to helper modules (e.g., utils.common_helpers).
-    # PDFToolApp is now primarily responsible for creating the main window,
-    # the notebook, and instantiating the tab handler classes.
-
-# Main application setup - This is the end of the PDFToolApp class.
-# The following lines are OUTSIDE the class.
 if __name__ == "__main__":
-    root = TkinterDnD.Tk() # Use TkinterDnD Tk object for drag & drop
-    app = PDFToolApp(root)
-    root.mainloop() 
+    app = QApplication(sys.argv)
+    
+    # Apply light theme using qdarktheme
+    qdarktheme.setup_theme("light") 
+    
+    # Set application properties for better integration
+    app.setApplicationName("PDF & Datei Werkzeug")
+    app.setApplicationVersion("2.0")
+    app.setOrganizationName("PDF Tools")
+    
+    main_win = MainWindow()
+    main_win.show()
+    sys.exit(app.exec()) 

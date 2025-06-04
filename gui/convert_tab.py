@@ -1,27 +1,26 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from PyPDF2 import PdfWriter # PdfReader might not be needed here, but PdfWriter is for merging temp PDFs
-from PIL import Image, UnidentifiedImageError, ImageSequence
 import os
-from tkinterdnd2 import DND_FILES
+import io
+import tempfile
+from PyPDF2 import PdfWriter, PdfReader # PdfReader for merging existing PDFs
+from PIL import Image, UnidentifiedImageError, ImageSequence
 from xhtml2pdf import pisa
 from svglib.svglib import svg2rlg
-from pillow_heif import register_heif_opener # Keep if HEIC/HEIF is directly handled
 from striprtf.striprtf import rtf_to_text
-import io # For BytesIO, used with xhtml2pdf
-import tempfile
 
-# --- ReportLab Imports ---
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4 # Using A4 by default
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
-from reportlab.lib.utils import ImageReader
-# from reportlab.lib.styles import getSampleStyleSheet # For Paragraph, if used later
-# from reportlab.platypus import Paragraph # For more advanced text layout, if used later
-# --- End ReportLab Imports ---
+from reportlab.lib.utils import ImageReader as ReportLabImageReader # Alias to avoid conflict
 
-from utils.common_helpers import parse_dropped_files
-# Import constants from the new central location
+from PySide6.QtWidgets import (
+    QWidget, QPushButton, QLabel, QListWidget, QListWidgetItem, QRadioButton,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QGroupBox, QCheckBox,
+    QApplication, QScrollArea, QFrame, QFileIconProvider # Added QFileIconProvider
+)
+from PySide6.QtCore import Qt, QUrl, QSize, QFileInfo
+from PySide6.QtGui import QIcon, QPixmap, QPainter # For icons
+
+from utils.common_helpers import parse_dropped_files # May need adjustment for Qt mime data
 from utils.constants import (
     FILETYPES_FOR_DIALOG,
     ALL_SUPPORTED_EXT_PATTERNS_LIST,
@@ -32,701 +31,587 @@ from utils.constants import (
     SVG_EXTENSIONS
 )
 
-# --- pillow-heif registration (if not already done globally, but should be) ---
-# register_heif_opener() # Assuming this is called once in the main app
+# It's good practice to ensure pillow_heif is registered if you handle HEIC directly.
+# Assuming it's done in main pdf_tool.py is fine.
+# from pillow_heif import register_heif_opener
+# register_heif_opener()
 
-# --- Constants (will be moved to utils/constants.py later) --- 
-# SUPPORTED_FILE_TYPES, ALL_SUPPORTED_EXTENSIONS_DESC, etc. removed
-
-class ConvertTab:
-    def __init__(self, parent_notebook, app_root):
+class ConvertTab(QWidget):
+    def __init__(self, app_root=None):
+        super().__init__()
         self.app_root = app_root
-        self.file_to_pdf_frame = ttk.Frame(parent_notebook)
+        self.selected_files_for_conversion = [] # Stores full paths
+        self.icon_size = QSize(80, 100) # Size for icons in icon view
+        self.preview_size = QSize(64, 64) # Size for generating pixmap previews
 
-        self.selected_files_for_conversion = []
-        self.view_mode_var = tk.StringVar(value="list")
-        self.list_view_frame = None
-        self.file_to_pdf_listbox = None
-        self.icon_view_frame = None
-        self.icon_canvas = None
-        self.icon_scrollbar = None
-        self.icon_scrollable_frame = None
-        self.selected_file_index = -1
-        self.icon_buttons = []
-        self.single_pdf_output_var = tk.BooleanVar(value=True)
-        self.file_conversion_status_label = None
+        self._init_ui()
 
-        self._create_file_to_pdf_widgets()
+    def _init_ui(self):
+        main_layout = QVBoxLayout(self)
 
-    def get_frame(self):
-        return self.file_to_pdf_frame
+        # --- View Toggle ---
+        view_toggle_frame = QFrame() # Using QFrame for simple grouping
+        view_toggle_layout = QHBoxLayout(view_toggle_frame)
+        view_toggle_layout.setContentsMargins(0,0,0,0)
+        view_toggle_layout.addWidget(QLabel("Ansicht:"))
+        self.list_view_radio = QRadioButton("Liste")
+        self.list_view_radio.setChecked(True)
+        self.list_view_radio.toggled.connect(self._toggle_view_mode)
+        view_toggle_layout.addWidget(self.list_view_radio)
+        self.icon_view_radio = QRadioButton("Symbole")
+        self.icon_view_radio.toggled.connect(self._toggle_view_mode)
+        view_toggle_layout.addWidget(self.icon_view_radio)
+        view_toggle_layout.addStretch()
+        main_layout.addWidget(view_toggle_frame)
 
-    def _create_file_to_pdf_widgets(self): 
-        view_toggle_frame = ttk.Frame(self.file_to_pdf_frame)
-        view_toggle_frame.pack(padx=10, pady=5, fill="x")
-        
-        ttk.Label(view_toggle_frame, text="Ansicht:").pack(side=tk.LEFT, padx=5)
-        
-        list_view_radio = ttk.Radiobutton(view_toggle_frame, text="Liste", variable=self.view_mode_var, 
-                                         value="list", command=self._toggle_view_mode)
-        list_view_radio.pack(side=tk.LEFT, padx=5)
-        
-        icon_view_radio = ttk.Radiobutton(view_toggle_frame, text="Symbole", variable=self.view_mode_var, 
-                                         value="icons", command=self._toggle_view_mode)
-        icon_view_radio.pack(side=tk.LEFT, padx=5)
-        
-        controls_frame = ttk.LabelFrame(self.file_to_pdf_frame, text="Dateien für Konvertierung")
-        controls_frame.pack(padx=10, pady=10, fill="both", expand=True)
+        # --- Controls Group (List/Icon View and Buttons) ---
+        controls_group = QGroupBox("Dateien für Konvertierung")
+        controls_group_layout = QHBoxLayout(controls_group)
 
-        self.views_container = ttk.Frame(controls_frame)
-        self.views_container.pack(side=tk.LEFT, fill="both", expand=True, padx=5, pady=5)
+        self.file_list_widget = QListWidget()
+        self.file_list_widget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         
-        self.list_view_frame = ttk.Frame(self.views_container)
-        self.list_view_frame.pack(fill="both", expand=True)
+        # Enable both internal move (for reordering) and external drops (for adding files)
+        self.file_list_widget.setDragDropMode(QListWidget.DragDropMode.DragDrop)
+        self.file_list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
         
-        self.file_to_pdf_listbox = tk.Listbox(self.list_view_frame, selectmode=tk.SINGLE, height=10)
-        self.file_to_pdf_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        self.file_list_widget.setAcceptDrops(True)
         
-        self.file_to_pdf_listbox.bind('<<ListboxSelect>>', self._on_listbox_select)
+        # Connect to model changes to keep internal list synchronized
+        self.file_list_widget.model().rowsMoved.connect(self._on_rows_moved)
+        
+        # Override drag and drop events for external file drops
+        self.file_list_widget.dragEnterEvent = self._drag_enter_event
+        self.file_list_widget.dragMoveEvent = self._drag_move_event
+        self.file_list_widget.dropEvent = self._drop_event
+        
+        self.file_list_widget.setViewMode(QListWidget.ViewMode.ListMode)
+        self.file_list_widget.setIconSize(self.icon_size) # Set icon size for icon mode
+        self.file_list_widget.setWordWrap(True)
+        self.file_list_widget.itemSelectionChanged.connect(self._on_list_selection_changed)
 
-        file_to_pdf_scrollbar = ttk.Scrollbar(self.list_view_frame, orient="vertical", command=self.file_to_pdf_listbox.yview)
-        file_to_pdf_scrollbar.pack(side=tk.LEFT, fill="y")
-        self.file_to_pdf_listbox.config(yscrollcommand=file_to_pdf_scrollbar.set)
-        
-        self.icon_view_frame = ttk.Frame(self.views_container)
-        
-        self.icon_canvas = tk.Canvas(self.icon_view_frame, bg="white")
-        self.icon_scrollbar = ttk.Scrollbar(self.icon_view_frame, orient="vertical", command=self.icon_canvas.yview)
-        self.icon_scrollable_frame = ttk.Frame(self.icon_canvas)
-        
-        self.icon_scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.icon_canvas.configure(scrollregion=self.icon_canvas.bbox("all"))
-        )
-        
-        self.icon_canvas.create_window((0, 0), window=self.icon_scrollable_frame, anchor="nw")
-        self.icon_canvas.configure(yscrollcommand=self.icon_scrollbar.set)
-        
-        self.icon_canvas.pack(side="left", fill="both", expand=True)
-        self.icon_scrollbar.pack(side="right", fill="y")
-        
-        self.icon_canvas.bind("<MouseWheel>", self._on_mousewheel)
-        
-        self.icon_buttons = []
+        controls_group_layout.addWidget(self.file_list_widget, 1)
 
-        buttons_frame = ttk.Frame(controls_frame)
-        buttons_frame.pack(side=tk.RIGHT, fill="y", padx=5)
+        # Buttons
+        buttons_layout = QVBoxLayout()
+        self.add_button = QPushButton("Dateien hinzufügen")
+        self.add_button.clicked.connect(self._add_files_to_convert_list)
+        buttons_layout.addWidget(self.add_button)
+        self.remove_button = QPushButton("Auswahl entfernen")
+        self.remove_button.clicked.connect(self._remove_file_from_convert_list)
+        buttons_layout.addWidget(self.remove_button)
+        self.move_up_button = QPushButton("Nach oben")
+        self.move_up_button.clicked.connect(self._move_convert_item_up)
+        buttons_layout.addWidget(self.move_up_button)
+        self.move_down_button = QPushButton("Nach unten")
+        self.move_down_button.clicked.connect(self._move_convert_item_down)
+        buttons_layout.addWidget(self.move_down_button)
+        buttons_layout.addStretch()
+        controls_group_layout.addLayout(buttons_layout)
+        main_layout.addWidget(controls_group)
 
-        add_button = ttk.Button(buttons_frame, text="Dateien hinzufügen", command=self._add_files_to_convert_list)
-        add_button.pack(fill="x", pady=2)
+        # --- Options ---
+        options_frame = QFrame()
+        options_layout = QHBoxLayout(options_frame)
+        options_layout.setContentsMargins(0,0,0,0)
+        self.single_pdf_output_check = QCheckBox("Alle Dateien in eine einzelne PDF-Datei zusammenfassen")
+        self.single_pdf_output_check.setChecked(True)
+        options_layout.addWidget(self.single_pdf_output_check)
+        options_layout.addStretch()
+        main_layout.addWidget(options_frame)
 
-        remove_button = ttk.Button(buttons_frame, text="Auswahl entfernen", command=self._remove_file_from_convert_list)
-        remove_button.pack(fill="x", pady=2)
+        # --- Action Area ---
+        action_layout = QVBoxLayout()
+        self.convert_button = QPushButton("Ausgewählte Dateien zu PDF konvertieren und speichern")
+        self.convert_button.clicked.connect(self._execute_file_to_pdf)
+        action_layout.addWidget(self.convert_button)
+        self.file_conversion_status_label = QLabel("")
+        self.file_conversion_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        action_layout.addWidget(self.file_conversion_status_label)
+        main_layout.addLayout(action_layout)
 
-        move_up_button = ttk.Button(buttons_frame, text="Nach oben", command=self._move_convert_item_up)
-        move_up_button.pack(fill="x", pady=2)
-
-        move_down_button = ttk.Button(buttons_frame, text="Nach unten", command=self._move_convert_item_down)
-        move_down_button.pack(fill="x", pady=2)
-        
-        self.file_to_pdf_listbox.drop_target_register(DND_FILES)
-        self.file_to_pdf_listbox.dnd_bind('<<Drop>>', self._handle_file_drop)
-        
-        self.icon_canvas.drop_target_register(DND_FILES)
-        self.icon_canvas.dnd_bind('<<Drop>>', self._handle_file_drop)
-        
-        options_frame = ttk.Frame(self.file_to_pdf_frame)
-        options_frame.pack(padx=10, pady=5, fill="x")
-
-        single_pdf_output_check = ttk.Checkbutton(
-            options_frame, 
-            text="Alle Dateien in eine einzelne PDF-Datei zusammenfassen", 
-            variable=self.single_pdf_output_var
-        )
-        single_pdf_output_check.pack(side=tk.LEFT, padx=5)
-
-        action_frame = ttk.Frame(self.file_to_pdf_frame)
-        action_frame.pack(padx=10, pady=10, fill="x")
-
-        convert_button = ttk.Button(action_frame, text="Ausgewählte Dateien zu PDF konvertieren und speichern", command=self._execute_file_to_pdf)
-        convert_button.pack(pady=5)
-
-        self.file_conversion_status_label = ttk.Label(action_frame, text="")
-        self.file_conversion_status_label.pack(pady=5)
-        
-        self._toggle_view_mode()
+        self.setLayout(main_layout)
+        self._toggle_view_mode() # Initial setup
 
     def _toggle_view_mode(self):
-        if self.view_mode_var.get() == "list":
-            self.icon_view_frame.pack_forget()
-            self.list_view_frame.pack(fill="both", expand=True)
+        if self.list_view_radio.isChecked():
+            self.file_list_widget.setViewMode(QListWidget.ViewMode.ListMode)
         else:
-            self.list_view_frame.pack_forget()
-            self.icon_view_frame.pack(fill="both", expand=True)
-            self._refresh_icon_view()
+            self.file_list_widget.setViewMode(QListWidget.ViewMode.IconMode)
+            self.file_list_widget.setFlow(QListWidget.Flow.LeftToRight) # Typical for icon views
+            self.file_list_widget.setWrapping(True)
+            self.file_list_widget.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self._refresh_list_widget_items() # Refresh items as view mode might affect display
+
+    def _on_list_selection_changed(self):
+        # This might be useful if we need to act on selection for other UI elements
+        # For now, QListWidget handles selection visually.
+        pass 
+
+    def _on_rows_moved(self, parent, start, end, destination, row):
+        """Called when rows are moved via drag and drop. Updates internal file list."""
+        self._update_internal_file_list_from_widget()
+        self.file_conversion_status_label.setText("Dateien neu sortiert.")
+
+    def _update_internal_file_list_from_widget(self):
+        """Synchronizes self.selected_files_for_conversion based on QListWidget items order and data."""
+        self.selected_files_for_conversion.clear()
+        for i in range(self.file_list_widget.count()):
+            item = self.file_list_widget.item(i)
+            self.selected_files_for_conversion.append(item.data(Qt.ItemDataRole.UserRole))
+
+    def _refresh_list_widget_items(self):
+        current_selection_path = None
+        selected_items = self.file_list_widget.selectedItems()
+        if selected_items:
+            current_selection_path = selected_items[0].data(Qt.ItemDataRole.UserRole)
+
+        self.file_list_widget.clear()
+        for file_path in self.selected_files_for_conversion:
+            item = QListWidgetItem(os.path.basename(file_path))
+            item.setData(Qt.ItemDataRole.UserRole, file_path) # Store full path
+            item.setIcon(self._get_q_icon_for_file(file_path)) # Set QIcon
+            self.file_list_widget.addItem(item)
+            if file_path == current_selection_path:
+                item.setSelected(True)
     
-    def _on_mousewheel(self, event):
-        self.icon_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-    
-    def _get_file_icon(self, file_path):
-        _, ext = os.path.splitext(file_path.lower())
-        icon_map = {
-            '.pdf': '📄',
-            '.jpg': '🖼️', '.jpeg': '🖼️', '.png': '🖼️', '.bmp': '🖼️', 
-            '.gif': '🖼️', '.tiff': '🖼️', '.tif': '🖼️', '.heic': '🖼️', '.heif': '🖼️',
-            '.txt': '📝',
-            '.rtf': '📝',
-            '.html': '🌐', '.htm': '🌐',
-            '.svg': '🎨',
-            '.doc': '📄', '.docx': '📄',
-            '.xls': '📊', '.xlsx': '📊',
-            '.ppt': '📊', '.pptx': '📊',
-            '.odt': '📄', '.ods': '📊', '.odp': '📊'
-        }
-        return icon_map.get(ext, '📁')
-    
-    def _refresh_icon_view(self):
-        for widget in self.icon_scrollable_frame.winfo_children():
-            widget.destroy()
-        self.icon_buttons.clear()
+    def _get_q_icon_for_file(self, file_path):
+        # Basic file type icon provider
+        provider = QFileIconProvider()
+        # Use QFileInfo for getting the icon in PySide6
+        file_info = QFileInfo(file_path)
+        q_icon = provider.icon(file_info) # Use QFileInfo instead of string path
+        if not q_icon or q_icon.isNull():
+            # Fallback to generating a generic pixmap based on extension if native fails or is generic
+            _, ext = os.path.splitext(file_path.lower())
+            pixmap = QPixmap(self.preview_size)
+            pixmap.fill(Qt.GlobalColor.lightGray)
+            painter = QPainter(pixmap)
+            text = ext.replace(".","").upper() if ext else "FILE"
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
+            painter.end()
+            q_icon = QIcon(pixmap)
+        return q_icon
+
+    def _add_files_to_list(self, file_paths):
+        added_count = 0
+        for file_path in file_paths:
+            # Check if full path already exists to prevent duplicates
+            if not any(file_path == existing_fp for existing_fp in self.selected_files_for_conversion):
+                _, ext = os.path.splitext(file_path.lower())
+                if ext in ALL_SUPPORTED_EXT_PATTERNS_LIST:
+                    self.selected_files_for_conversion.append(file_path)
+                    added_count += 1
+                else:
+                    print(f"Skipping unsupported file: {file_path}") # Or show a message box
         
-        row, col = 0, 0
-        max_cols = 4
-        
-        for i, file_path in enumerate(self.selected_files_for_conversion):
-            icon_frame = ttk.Frame(self.icon_scrollable_frame, relief="raised", borderwidth=1)
-            icon_frame.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
-            
-            icon_text = self._get_file_icon(file_path)
-            icon_label = ttk.Label(icon_frame, text=icon_text, font=("Arial", 24))
-            icon_label.pack(pady=5)
-            
-            filename = os.path.basename(file_path)
-            if len(filename) > 15:
-                display_name = filename[:12] + "..."
-            else:
-                display_name = filename
-            
-            name_label = ttk.Label(icon_frame, text=display_name, font=("Arial", 8), wraplength=80)
-            name_label.pack(pady=2)
-            
-            def make_click_handler(index):
-                def on_click(event):
-                    self._select_icon(index)
-                return on_click
-            
-            click_handler = make_click_handler(i)
-            icon_frame.bind("<Button-1>", click_handler)
-            icon_label.bind("<Button-1>", click_handler)
-            name_label.bind("<Button-1>", click_handler)
-            
-            self.icon_buttons.append(icon_frame)
-            
-            col += 1
-            if col >= max_cols:
-                col = 0
-                row += 1
-        
-        for i in range(max_cols):
-            self.icon_scrollable_frame.columnconfigure(i, weight=1)
-        
-        self.icon_scrollable_frame.update_idletasks()
-        self.icon_canvas.configure(scrollregion=self.icon_canvas.bbox("all"))
-    
-    def _select_icon(self, index):
-        for frame in self.icon_buttons:
-            frame.configure(relief="raised", borderwidth=1)
-        
-        if 0 <= index < len(self.icon_buttons):
-            self.icon_buttons[index].configure(relief="solid", borderwidth=2)
-            self.selected_file_index = index
-            
-            self.file_to_pdf_listbox.selection_clear(0, tk.END)
-            self.file_to_pdf_listbox.selection_set(index)
-    
-    def _get_current_selection_index(self):
-        if self.view_mode_var.get() == "list":
-            selection = self.file_to_pdf_listbox.curselection()
-            return selection[0] if selection else -1
+        if added_count > 0:
+            self._refresh_list_widget_items()
+            self.file_conversion_status_label.setText(f"{added_count} Datei(en) zur Konvertierungsliste hinzugefügt.")
         else:
-            return self.selected_file_index
-    
-    def _on_listbox_select(self, event):
-        selected_indices = self.file_to_pdf_listbox.curselection()
-        if selected_indices:
-            self.selected_file_index = selected_indices[0]
+            self.file_conversion_status_label.setText("Keine neuen unterstützten Dateien hinzugefügt.")
 
     def _add_files_to_convert_list(self):
-        files = filedialog.askopenfilenames(
-            title="Dateien für Konvertierung auswählen",
-            filetypes=FILETYPES_FOR_DIALOG
+        # FILETYPES_FOR_DIALOG should be a string like "Images (*.png *.jpg);;Text files (*.txt)"
+        dialog_filter = " ;; ".join([f"{ftype_desc} ({' '.join(['*'+ext for ext in exts])})" for ftype_desc, exts in FILETYPES_FOR_DIALOG.items()])
+        dialog_filter += " ;; Alle unterstützten Dateien ({}) ;; Alle Dateien (*.*)".format(' '.join([f"*{ext}" for ext in ALL_SUPPORTED_EXT_PATTERNS_LIST]))
+        
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Dateien für Konvertierung auswählen",
+            "",
+            dialog_filter
         )
         if files:
-            for file_path in files:
-                if file_path not in self.selected_files_for_conversion:
-                    self.selected_files_for_conversion.append(file_path)
-                    self.file_to_pdf_listbox.insert(tk.END, os.path.basename(file_path))
-            self.file_conversion_status_label.config(text=f"{len(files)} Datei(en) hinzugefügt.")
-            
-            if self.view_mode_var.get() == "icons":
-                self._refresh_icon_view()
+            self._add_files_to_list(files)
 
     def _remove_file_from_convert_list(self):
-        selected_index = self._get_current_selection_index()
-        if selected_index >= 0:
-            del self.selected_files_for_conversion[selected_index]
-            self.file_to_pdf_listbox.delete(selected_index)
-            self.file_conversion_status_label.config(text="Datei entfernt.")
-            self.selected_file_index = -1
-            if self.view_mode_var.get() == "icons":
-                self._refresh_icon_view()
+        selected_items = self.file_list_widget.selectedItems()
+        if selected_items:
+            item_to_remove = selected_items[0]
+            file_path_to_remove = item_to_remove.data(Qt.ItemDataRole.UserRole)
+            self.selected_files_for_conversion.remove(file_path_to_remove)
+            self._refresh_list_widget_items()
+            self.file_conversion_status_label.setText("Datei entfernt.")
         else:
-            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Entfernen aus.")
+            QMessageBox.warning(self, "Keine Auswahl", "Bitte wählen Sie eine Datei zum Entfernen aus.")
+
+    def _move_item(self, direction):
+        selected_items = self.file_list_widget.selectedItems()
+        if not selected_items: return
+        current_item = selected_items[0]
+        current_path = current_item.data(Qt.ItemDataRole.UserRole)
+        current_idx = self.selected_files_for_conversion.index(current_path)
+
+        new_idx = current_idx + direction
+        if 0 <= new_idx < len(self.selected_files_for_conversion):
+            self.selected_files_for_conversion.pop(current_idx)
+            self.selected_files_for_conversion.insert(new_idx, current_path)
+            self._refresh_list_widget_items()
+            # Re-select the moved item
+            for i in range(self.file_list_widget.count()):
+                if self.file_list_widget.item(i).data(Qt.ItemDataRole.UserRole) == current_path:
+                    self.file_list_widget.item(i).setSelected(True)
+                    self.file_list_widget.scrollToItem(self.file_list_widget.item(i))
+                    break
+            self.file_conversion_status_label.setText("Datei verschoben.")
 
     def _move_convert_item_up(self):
-        selected_index = self._get_current_selection_index()
-        if selected_index >= 0:
-            if selected_index > 0:
-                self.selected_files_for_conversion[selected_index], self.selected_files_for_conversion[selected_index-1] = \
-                    self.selected_files_for_conversion[selected_index-1], self.selected_files_for_conversion[selected_index]
-                text = self.file_to_pdf_listbox.get(selected_index)
-                self.file_to_pdf_listbox.delete(selected_index)
-                self.file_to_pdf_listbox.insert(selected_index-1, text)
-                self.file_to_pdf_listbox.selection_set(selected_index-1)
-                self.file_conversion_status_label.config(text="Datei nach oben verschoben.")
-                self.selected_file_index = selected_index - 1
-                if self.view_mode_var.get() == "icons":
-                    self._refresh_icon_view()
-                    self._select_icon(selected_index - 1)
-        else:
-            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
+        self._move_item(-1)
 
     def _move_convert_item_down(self):
-        selected_index = self._get_current_selection_index()
-        if selected_index >= 0:
-            if selected_index < len(self.selected_files_for_conversion) - 1:
-                self.selected_files_for_conversion[selected_index], self.selected_files_for_conversion[selected_index+1] = \
-                    self.selected_files_for_conversion[selected_index+1], self.selected_files_for_conversion[selected_index]
-                text = self.file_to_pdf_listbox.get(selected_index)
-                self.file_to_pdf_listbox.delete(selected_index)
-                self.file_to_pdf_listbox.insert(selected_index+1, text)
-                self.file_to_pdf_listbox.selection_set(selected_index+1)
-                self.file_conversion_status_label.config(text="Datei nach unten verschoben.")
-                self.selected_file_index = selected_index + 1
-                if self.view_mode_var.get() == "icons":
-                    self._refresh_icon_view()
-                    self._select_icon(selected_index + 1)
+        self._move_item(1)
+
+    # --- Drag and Drop --- 
+    def _drag_enter_event(self, event):
+        # Check if the dropped data contains URLs (file paths) - for external drops
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        # Also allow internal moves
+        elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+            event.acceptProposedAction()
         else:
-            messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
+            event.ignore()
 
-    def _handle_file_drop(self, event):
-        try:
-            dropped_files = parse_dropped_files(event.data)
-            added_count = 0
-            unsupported_files = []
-            for file_path in dropped_files:
-                if os.path.isfile(file_path):
-                    _, ext = os.path.splitext(file_path.lower())
-                    # Use ALL_SUPPORTED_EXT_PATTERNS_LIST from this module for now
-                    if ext in ALL_SUPPORTED_EXT_PATTERNS_LIST:
-                        if file_path not in self.selected_files_for_conversion: 
-                            self.selected_files_for_conversion.append(file_path) 
-                            self.file_to_pdf_listbox.insert(tk.END, os.path.basename(file_path)) 
-                            added_count += 1
-                    else:
-                        unsupported_files.append(os.path.basename(file_path))
-                        
-            if added_count > 0:
-                status_msg = f"{added_count} Datei(en) per Drag & Drop hinzugefügt."
-                if unsupported_files:
-                    status_msg += f" Nicht unterstützte Dateien: {', '.join(unsupported_files)}"
-                self.file_conversion_status_label.config(text=status_msg) 
-                if self.view_mode_var.get() == "icons":
-                    self._refresh_icon_view()
-            elif unsupported_files:
-                 self.file_conversion_status_label.config(text=f"Keine unterstützten Dateien per Drag & Drop hinzugefügt. Nicht unterstützt: {', '.join(unsupported_files)}")
-            elif not dropped_files: 
-                 self.file_conversion_status_label.config(text="Keine gültigen Dateien im Drop gefunden.") 
-                 
-        except Exception as e:
-            self.file_conversion_status_label.config(text="Fehler beim Drag & Drop.")
-            messagebox.showerror("Drag & Drop Fehler", f"Ein Fehler ist aufgetreten: {e}")
+    def _drag_move_event(self, event):
+        # This event is similar to dragEnterEvent; often, the same logic applies
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
 
+    def _drop_event(self, event):
+        # Handle external file drops
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+            urls = event.mimeData().urls()
+            dropped_files = []
+            for url in urls:
+                if url.isLocalFile():
+                    dropped_files.append(url.toLocalFile())
+            
+            if dropped_files:
+                self._add_files_to_list(dropped_files)
+            else:
+                self.file_conversion_status_label.setText("Keine lokalen Dateien im Drop-Event gefunden.")
+        
+        # Handle internal moves (let the default implementation handle it)
+        elif event.mimeData().hasFormat("application/x-qabstractitemmodeldatalist"):
+            # Call the parent's dropEvent to handle internal moves
+            QListWidget.dropEvent(self.file_list_widget, event)
+        else:
+            event.ignore()
+
+    # --- PDF Conversion Logic ---
     def _execute_file_to_pdf(self):
         if not self.selected_files_for_conversion:
-            messagebox.showwarning("Keine Dateien ausgewählt", "Bitte wählen Sie mindestens eine Datei für die Konvertierung aus.")
+            QMessageBox.warning(self, "Keine Dateien", "Bitte wählen Sie Dateien für die Konvertierung aus.")
             return
 
-        single_output_mode = self.single_pdf_output_var.get()
-        output_final_pdf_path = None
-        output_directory_for_multiple = None
-        
-        if single_output_mode:
-            output_final_pdf_path = filedialog.asksaveasfilename(
-                defaultextension=".pdf", filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*"))
-            )
-            if not output_final_pdf_path:
-                self.file_conversion_status_label.config(text="Konvertierung abgebrochen.")
-                return
+        if self.single_pdf_output_check.isChecked():
+            self._convert_to_single_pdf()
         else:
-            output_directory_for_multiple = filedialog.askdirectory(title="Ordner für konvertierte PDFs auswählen")
-            if not output_directory_for_multiple:
-                self.file_conversion_status_label.config(text="Konvertierung abgebrochen.")
-                return
+            self._convert_to_separate_pdfs()
 
-        self.file_conversion_status_label.config(text="Konvertiere Dateien...")
-        self.app_root.update_idletasks()
+    def _convert_to_single_pdf(self):
+        output_filename, _ = QFileDialog.getSaveFileName(
+            self, "Zusammengeführte PDF speichern unter", "", "PDF-Dateien (*.pdf)"
+        )
+        if not output_filename: return
 
-        files_processed_this_run = 0
-        errors_occurred = []
-        temp_files_to_merge_in_single_mode = []
-        
-        reportlab_canvas_content_temp_path = None
-        shared_reportlab_canvas = None
-        reportlab_canvas_has_content = False
+        merged_pdf_writer = PdfWriter()
+        temp_pdf_files = []
+        conversion_successful = True
 
-        if single_output_mode:
-            fd, reportlab_canvas_content_temp_path = tempfile.mkstemp(suffix=".pdf", prefix="rl_canvas_")
-            os.close(fd)
-            shared_reportlab_canvas = canvas.Canvas(reportlab_canvas_content_temp_path, pagesize=A4)
-            shared_reportlab_canvas.setTitle("Canvas Content")
+        self.file_conversion_status_label.setText("Konvertiere und führe zusammen...")
+        QApplication.processEvents()
 
-        try:
-            for index, file_path in enumerate(self.selected_files_for_conversion):
-                base_name = os.path.basename(file_path)
-                name_no_ext, ext = os.path.splitext(base_name)
-                ext = ext.lower()
-                current_file_processed_successfully = False
+        for i, file_path in enumerate(self.selected_files_for_conversion):
+            self.file_conversion_status_label.setText(f"Verarbeite Datei {i+1}/{len(self.selected_files_for_conversion)}: {os.path.basename(file_path)}")
+            QApplication.processEvents()
+            _, ext = os.path.splitext(file_path.lower())
+            temp_pdf_path = None
+
+            try:
+                if ext == ".pdf":
+                    # For existing PDFs, just add them directly (no temp file needed for merging)
+                    pdf_reader = PdfReader(file_path)
+                    for page in pdf_reader.pages:
+                        merged_pdf_writer.add_page(page)
+                    continue # Skip temp file creation/cleanup for this one
                 
-                current_canvas_for_drawing = None
-                individual_output_path_for_direct_pdf = None
+                # For other types, convert to a temporary PDF
+                fd, temp_pdf_path = tempfile.mkstemp(suffix=".pdf")
+                os.close(fd)
+                temp_pdf_files.append(temp_pdf_path)
 
-                if single_output_mode:
-                    if ext in IMAGE_EXTENSIONS or ext in TEXT_EXTENSIONS or ext in RTF_EXTENSIONS or ext in SVG_EXTENSIONS:
-                        current_canvas_for_drawing = shared_reportlab_canvas
-                    elif ext in HTML_EXTENSIONS:
-                        fd, temp_html_pdf_path = tempfile.mkstemp(suffix=".pdf", prefix=f"html_{name_no_ext}_")
-                        os.close(fd)
-                        individual_output_path_for_direct_pdf = temp_html_pdf_path
-                        temp_files_to_merge_in_single_mode.append(temp_html_pdf_path)
+                c = canvas.Canvas(temp_pdf_path, pagesize=A4)
+                if ext in IMAGE_EXTENSIONS:
+                    self._add_image_to_pdf_canvas(file_path, c)
+                elif ext in TEXT_EXTENSIONS:
+                    self._add_text_file_to_pdf_canvas(file_path, c)
+                elif ext in RTF_EXTENSIONS:
+                    self._add_rtf_to_pdf_canvas(file_path, c)
+                elif ext in HTML_EXTENSIONS:
+                    c.save() # Close canvas before xhtml2pdf writes to the same file
+                    self._convert_html_to_existing_pdf(file_path, temp_pdf_path) # Use helper to write to existing path
+                elif ext in SVG_EXTENSIONS:
+                    self._add_svg_to_pdf_canvas(file_path, c)
                 else:
-                    if ext in IMAGE_EXTENSIONS or ext in TEXT_EXTENSIONS or ext in RTF_EXTENSIONS or ext in SVG_EXTENSIONS:
-                        individual_rl_pdf_path = os.path.join(output_directory_for_multiple, f"{name_no_ext}_drawn.pdf")
-                        current_canvas_for_drawing = canvas.Canvas(individual_rl_pdf_path, pagesize=A4)
-                        current_canvas_for_drawing.setTitle(base_name)
-                    elif ext in HTML_EXTENSIONS:
-                        individual_output_path_for_direct_pdf = os.path.join(output_directory_for_multiple, f"{name_no_ext}.pdf")
-
-                try:
-                    self.file_conversion_status_label.config(text=f"Verarbeite: {base_name}...")
-                    self.app_root.update_idletasks()
-
-                    if ext in IMAGE_EXTENSIONS:
-                        self._add_image_to_pdf(file_path, current_canvas_for_drawing)
-                        current_file_processed_successfully = True
-                        if single_output_mode: reportlab_canvas_has_content = True
-                    elif ext in TEXT_EXTENSIONS:
-                        self._add_text_file_to_pdf(file_path, current_canvas_for_drawing)
-                        current_file_processed_successfully = True
-                        if single_output_mode: reportlab_canvas_has_content = True
-                    elif ext in RTF_EXTENSIONS:
-                        self._add_rtf_to_pdf(file_path, current_canvas_for_drawing)
-                        current_file_processed_successfully = True
-                        if single_output_mode: reportlab_canvas_has_content = True
-                    elif ext in HTML_EXTENSIONS:
-                        self._convert_html_to_separate_pdf(file_path, individual_output_path_for_direct_pdf)
-                        current_file_processed_successfully = True
-                    elif ext in SVG_EXTENSIONS:
-                        self._add_svg_to_pdf(file_path, current_canvas_for_drawing)
-                        current_file_processed_successfully = True
-                        if single_output_mode: reportlab_canvas_has_content = True
-                    else:
-                        error_msg = f"{base_name}: Dateityp '{ext}' nicht unterstützt."
-                        errors_occurred.append(error_msg)
-                        if current_canvas_for_drawing:
-                            current_canvas_for_drawing.drawString(72, A4[1] - 72, f"Datei: {base_name} (nicht unterstützt)")
-                            current_canvas_for_drawing.showPage()
-                            if single_output_mode: reportlab_canvas_has_content = True
-                        if single_output_mode and individual_output_path_for_direct_pdf and os.path.exists(individual_output_path_for_direct_pdf):
-                            if individual_output_path_for_direct_pdf in temp_files_to_merge_in_single_mode:
-                                temp_files_to_merge_in_single_mode.remove(individual_output_path_for_direct_pdf)
-                            try: os.remove(individual_output_path_for_direct_pdf) 
-                            except OSError: pass
-
-                    if current_file_processed_successfully:
-                        files_processed_this_run += 1
-                    
-                    if not single_output_mode and current_canvas_for_drawing and current_file_processed_successfully:
-                        current_canvas_for_drawing.save()
-
-                except Exception as file_e:
-                    error_msg = f"Fehler bei {base_name}: {str(file_e)}"
-                    errors_occurred.append(error_msg)
-                    print(f"Error processing {base_name}: {file_e}")
-                    if single_output_mode and individual_output_path_for_direct_pdf and os.path.exists(individual_output_path_for_direct_pdf):
-                        if individual_output_path_for_direct_pdf in temp_files_to_merge_in_single_mode:
-                           temp_files_to_merge_in_single_mode.remove(individual_output_path_for_direct_pdf)
-                        try: os.remove(individual_output_path_for_direct_pdf) 
-                        except OSError: pass
-            
-            if single_output_mode:
-                if shared_reportlab_canvas:
-                    if reportlab_canvas_has_content:
-                        shared_reportlab_canvas.save()
-                        temp_files_to_merge_in_single_mode.insert(0, reportlab_canvas_content_temp_path)
-                    else:
-                        try: os.remove(reportlab_canvas_content_temp_path)
-                        except OSError: pass
-                        reportlab_canvas_content_temp_path = None
+                    # Should not happen if list is filtered by supported types
+                    print(f"Unsupported file type for temp conversion: {file_path}")
+                    conversion_successful = False
+                    break # Exit the for loop immediately
                 
-                if files_processed_this_run > 0 and temp_files_to_merge_in_single_mode:
-                    merger = PdfWriter()
-                    for pdf_path in temp_files_to_merge_in_single_mode:
-                        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) > 0:
-                            try:
-                                merger.append(pdf_path)
-                            except Exception as merge_e:
-                                errors_occurred.append(f"Fehler beim Mergen von {os.path.basename(pdf_path)}: {merge_e}")
-                        elif os.path.exists(pdf_path):
-                             errors_occurred.append(f"Temporäre Datei {os.path.basename(pdf_path)} war leer und wurde übersprungen.")
-                    
-                    if len(merger.pages) > 0 :
-                        with open(output_final_pdf_path, 'wb') as f_out:
-                            merger.write(f_out)
-                    elif not errors_occurred:
-                        errors_occurred.append("Keine Seiten konnten aus den ausgewählten Dateien generiert werden.")
-                    merger.close()
-                elif files_processed_this_run == 0 and not errors_occurred:
-                     errors_occurred.append("Keine unterstützten Dateien für die Konvertierung gefunden oder verarbeitet.")
-                
-                for temp_file_path in temp_files_to_merge_in_single_mode:
-                    if os.path.exists(temp_file_path):
-                        try: os.remove(temp_file_path)
-                        except OSError as e: print(f"Could not delete temp file {temp_file_path}: {e}")
-                if reportlab_canvas_content_temp_path and os.path.exists(reportlab_canvas_content_temp_path):
-                     try: os.remove(reportlab_canvas_content_temp_path)
-                     except OSError as e: print(f"Could not delete rl_canvas temp file {reportlab_canvas_content_temp_path}: {e}")
-            
-            if not errors_occurred and files_processed_this_run > 0:
-                messagebox.showinfo("Erfolg", f"{files_processed_this_run} Datei(en) erfolgreich zu PDF konvertiert.")
-                self.file_conversion_status_label.config(text="Konvertierung erfolgreich!")
-            elif errors_occurred:
-                processed_msg = f"{files_processed_this_run} Datei(en) erfolgreich verarbeitet." if files_processed_this_run > 0 else "Keine Dateien erfolgreich verarbeitet."
-                final_error_msg = f"{processed_msg}\n{len(errors_occurred)} Fehler aufgetreten:\n\n" + "\n".join(errors_occurred)
-                messagebox.showerror("Konvertierung mit Fehlern", final_error_msg)
-                self.file_conversion_status_label.config(text=f"Konvertierung mit {len(errors_occurred)} Fehlern abgeschlossen.")
-            elif files_processed_this_run == 0:
-                msg = "Keine Dateien verarbeitet."
-                if errors_occurred : msg += "\nDetails:\n" + "\n".join(errors_occurred)
-                else: msg += " Keine unterstützten Dateien ausgewählt."
-                messagebox.showwarning("Keine Dateien verarbeitet", msg)
-                self.file_conversion_status_label.config(text="Keine Dateien verarbeitet.")
+                if not (ext in HTML_EXTENSIONS): # HTML conversion saves its own canvas
+                    c.save()
 
-            self.selected_files_for_conversion.clear()
-            self.file_to_pdf_listbox.delete(0, tk.END)
-            if self.view_mode_var.get() == "icons":
-                self._refresh_icon_view() # Clear icons as well
+                # Add the pages from the temporary PDF to the merger
+                temp_reader = PdfReader(temp_pdf_path)
+                for page in temp_reader.pages:
+                    merged_pdf_writer.add_page(page)
             
-        except Exception as e:
-            messagebox.showerror("Schwerwiegender Fehler", f"Ein unerwarteter Fehler ist aufgetreten: {e}")
-            self.file_conversion_status_label.config(text="Schwerwiegender Konvertierungsfehler.")
-            for temp_file_path in temp_files_to_merge_in_single_mode:
-                if os.path.exists(temp_file_path):
-                    try: os.remove(temp_file_path)
-                    except OSError: pass
-            if reportlab_canvas_content_temp_path and os.path.exists(reportlab_canvas_content_temp_path):
-                try: os.remove(reportlab_canvas_content_temp_path)
-                except OSError: pass
-            if single_output_mode and output_final_pdf_path and os.path.exists(output_final_pdf_path) and files_processed_this_run == 0:
-                 try: os.remove(output_final_pdf_path)
-                 except OSError: pass       
-
-    def _convert_html_to_separate_pdf(self, html_file_path, output_pdf_path):
-        try:
-            with open(html_file_path, "r", encoding="utf-8") as source_html_file:
-                html_content = source_html_file.read()
-        except Exception as e:
-            raise RuntimeError(f"Fehler beim Lesen der HTML-Datei {os.path.basename(html_file_path)}: {e}")
+            except Exception as e:
+                QMessageBox.critical(self, "Konvertierungsfehler", "Fehler beim Verarbeiten einer Datei.") # Simplified message
+                conversion_successful = False
+                break # Exit the for loop immediately
+            finally:
+                # Canvas saving is done above. Here we only handle cleanup if an error didn't occur for HTML.
+                pass
         
-        try:
-            with open(output_pdf_path, "wb") as result_file:
-                pisa_status = pisa.CreatePDF(html_content, dest=result_file, encoding='utf-8')
-            
-            if pisa_status.err:
-                if os.path.exists(output_pdf_path):
-                    try: os.remove(output_pdf_path)
-                    except OSError: pass 
-                raise RuntimeError(f"xhtml2pdf Fehler für {os.path.basename(html_file_path)}: {pisa_status.err}")
-        except Exception as e:
-            if os.path.exists(output_pdf_path):
-                try: os.remove(output_pdf_path)
-                except OSError: pass
-            raise RuntimeError(f"Fehler beim Konvertieren von HTML zu PDF ({os.path.basename(html_file_path)}): {e}")
+        if conversion_successful and len(merged_pdf_writer.pages) > 0:
+            try:
+                with open(output_filename, 'wb') as f_out:
+                    merged_pdf_writer.write(f_out)
+                QMessageBox.information(self, "Erfolg", f"Dateien erfolgreich in {os.path.basename(output_filename)} zusammengeführt.")
+                self.file_conversion_status_label.setText("Konvertierung erfolgreich!")
+            except Exception as e:
+                 QMessageBox.critical(self, "Speicherfehler", f"Fehler beim Speichern der PDF: {e}")
+                 self.file_conversion_status_label.setText("Fehler beim Speichern.")
+        elif conversion_successful and len(merged_pdf_writer.pages) == 0:
+            QMessageBox.warning(self, "Leere PDF", "Keine Inhalte konnten konvertiert werden. Die resultierende PDF wäre leer.")
+            self.file_conversion_status_label.setText("Keine Inhalte konvertiert.")
+        else: # conversion_successful is False
+             self.file_conversion_status_label.setText("Konvertierung fehlgeschlagen.")
 
-    def _add_image_to_pdf(self, image_path, pdf_canvas):
+        # Cleanup temporary PDF files
+        for temp_file in temp_pdf_files:
+            try: os.remove(temp_file) 
+            except OSError: pass
+
+    def _convert_to_separate_pdfs(self):
+        output_dir = QFileDialog.getExistingDirectory(self, "Ausgabeverzeichnis auswählen")
+        if not output_dir: return
+
+        converted_count = 0
+        errors = []
+
+        self.file_conversion_status_label.setText("Konvertiere Dateien...")
+        QApplication.processEvents()
+
+        for i, file_path in enumerate(self.selected_files_for_conversion):
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            output_pdf_path = os.path.join(output_dir, f"{base_name}.pdf")
+            _, ext = os.path.splitext(file_path.lower())
+
+            self.file_conversion_status_label.setText(f"Konvertiere {i+1}/{len(self.selected_files_for_conversion)}: {os.path.basename(file_path)}")
+            QApplication.processEvents()
+            
+            try:
+                if ext == ".pdf": # Just copy if it's already a PDF
+                    import shutil
+                    shutil.copy2(file_path, output_pdf_path)
+                else:
+                    c = canvas.Canvas(output_pdf_path, pagesize=A4)
+                    if ext in IMAGE_EXTENSIONS:
+                        self._add_image_to_pdf_canvas(file_path, c)
+                    elif ext in TEXT_EXTENSIONS:
+                        self._add_text_file_to_pdf_canvas(file_path, c)
+                    elif ext in RTF_EXTENSIONS:
+                        self._add_rtf_to_pdf_canvas(file_path, c)
+                    elif ext in HTML_EXTENSIONS:
+                        c.save() # Save canvas to close it before xhtml2pdf writes to output_pdf_path
+                        self._convert_html_to_existing_pdf(file_path, output_pdf_path)
+                    elif ext in SVG_EXTENSIONS:
+                        self._add_svg_to_pdf_canvas(file_path, c)
+                    else:
+                        errors.append(f"Nicht unterstützter Dateityp: {os.path.basename(file_path)}")
+                        continue # Skip to next file
+                    
+                    if not (ext in HTML_EXTENSIONS):
+                         c.save()
+                converted_count += 1
+            except Exception as e:
+                errors.append(f"Fehler bei {os.path.basename(file_path)}: {e}")
+
+        if errors:
+            QMessageBox.warning(self, "Konvertierungsfehler", f"Einige Dateien konnten nicht konvertiert werden:\n\n" + "\n".join(errors))
+        if converted_count > 0:
+            QMessageBox.information(self, "Erfolg", f"{converted_count} Datei(en) erfolgreich nach PDF konvertiert im Verzeichnis: {output_dir}")
+            self.file_conversion_status_label.setText(f"{converted_count} Datei(en) konvertiert.")
+        elif not errors: # No errors but nothing converted (e.g. empty selection after filtering)
+             QMessageBox.information(self, "Nichts zu tun", "Keine Dateien wurden konvertiert.")
+             self.file_conversion_status_label.setText("Keine Dateien konvertiert.")
+
+    # --- Helper methods for adding content to PDF canvas or file ---
+    def _add_image_to_pdf_canvas(self, image_path, pdf_canvas):
         try:
             img = Image.open(image_path)
-            if img.format == "GIF":
-                try:
-                    img.seek(0)
-                    if img.mode not in ['L', 'RGB', 'CMYK']:
-                        img = img.convert('RGB')
-                except EOFError: 
-                    if img.mode not in ['L', 'RGB', 'CMYK']:
-                         img = img.convert('RGB') 
-            elif img.mode == 'RGBA':
-                img = img.convert('RGB') 
-            elif img.mode == 'P': 
-                img = img.convert('RGB')
+            img_width, img_height = img.size
 
-            img_reader = ImageReader(img) 
+            # Convert non-RGB/RGBA images (like P mode with palette, or LA)
+            if img.mode not in ('RGB', 'RGBA', 'L'):
+                if 'A' in img.mode or 'P' in img.mode : # Check for alpha or palette
+                     img = img.convert('RGBA')
+                else:
+                     img = img.convert('RGB')
+
+            # Handle multi-frame GIFs (convert first frame)
+            if hasattr(img, 'n_frames') and img.n_frames > 1:
+                 img.seek(0) # Ensure we are on the first frame
+                 if img.mode not in ('RGB', 'RGBA', 'L'): # Re-check mode after seek
+                     img = img.convert('RGBA') if 'A' in img.mode or 'P' in img.mode else img.convert('RGB')
+
+            page_width, page_height = A4
+            max_width = page_width - 2 * inch
+            max_height = page_height - 2 * inch
+
+            scale_w = max_width / img_width
+            scale_h = max_height / img_height
+            scale = min(scale_w, scale_h)
+
+            draw_width = img_width * scale
+            draw_height = img_height * scale
+            x_pos = (page_width - draw_width) / 2
+            y_pos = (page_height - draw_height) / 2
+
+            # Use ReportLabImageReader for Pillow images
+            pdf_canvas.drawImage(ReportLabImageReader(img), x_pos, y_pos, width=draw_width, height=draw_height, preserveAspectRatio=True)
+            pdf_canvas.showPage()
         except UnidentifiedImageError:
-            raise ValueError(f"Kann Bilddatei nicht identifizieren: {os.path.basename(image_path)}")
+            raise ValueError(f"Kann Bildformat nicht identifizieren: {os.path.basename(image_path)}")
         except Exception as e:
-            raise RuntimeError(f"Fehler beim Öffnen/Verarbeiten von {os.path.basename(image_path)}: {e}")
-
-        img_width, img_height = img.size
-        page_width, page_height = A4 
-        margin = 0.5 * inch 
-
-        available_width = page_width - 2 * margin
-        available_height = page_height - 2 * margin
-
-        scale_w = available_width / img_width
-        scale_h = available_height / img_height
-        scale = min(scale_w, scale_h)
-
-        draw_width = img_width * scale
-        draw_height = img_height * scale
-
-        pos_x = (page_width - draw_width) / 2
-        pos_y = (page_height - draw_height) / 2
-
-        pdf_canvas.setPageSize((page_width, page_height))
-        pdf_canvas.drawImage(img_reader, pos_x, pos_y, width=draw_width, height=draw_height, mask='auto')
-        pdf_canvas.showPage()
+            raise ValueError(f"Fehler beim Verarbeiten des Bildes {os.path.basename(image_path)}: {e}")
 
     def _render_text_to_pdf_canvas(self, text_content, pdf_canvas, source_filename="Text"):
-        page_width, page_height = A4
-        margin = 0.75 * inch
-        line_height = 14
-        font_name = "Helvetica"
-        font_size = 10
-
-        available_width = page_width - 2 * margin
-        max_lines_per_page = int((page_height - 2 * margin) / line_height)
-
-        lines = text_content.split('\n')
-        
-        current_line_on_page = 0
+        # Simple text rendering. For advanced, use Paragraph from reportlab.platypus
         text_object = pdf_canvas.beginText()
-        text_object.setFont(font_name, font_size)
-        text_object.setTextOrigin(margin, page_height - margin - line_height)
-        text_object.setLeading(line_height)
+        text_object.setFont("Helvetica", 10) # Basic font
+        text_object.setTextOrigin(inch, A4[1] - inch) # Top-leftish
+        text_object.setLeading(14) # Line spacing
 
-        if not lines or (len(lines) == 1 and not lines[0]):
-            pass 
+        page_width, page_height = A4
+        margin = inch
+        max_width = page_width - 2 * margin
+        current_y = page_height - margin
 
-        for i, line in enumerate(lines):
-            chars_per_line_approx = int(available_width / (font_size * 0.55)) 
-            if chars_per_line_approx <= 0: chars_per_line_approx = 1 
-            
-            sub_lines = [line[j:j+chars_per_line_approx] for j in range(0, len(line), chars_per_line_approx)]
-            if not sub_lines and line == "": 
-                sub_lines = ['']
-            elif not sub_lines and line != "":
-                sub_lines = [line] 
+        lines = text_content.splitlines()
+        for line in lines:
+            # Basic line wrapping (can be improved)
+            while pdf_canvas.stringWidth(line, "Helvetica", 10) > max_width:
+                # Find a good place to break the line
+                split_at = -1
+                for i in range(len(line) -1, 0, -1):
+                    if line[i].isspace():
+                        if pdf_canvas.stringWidth(line[:i], "Helvetica", 10) <= max_width:
+                            split_at = i
+                            break
+                if split_at == -1: # Cannot break on space, force break
+                    # Estimate based on average char width (very rough)
+                    avg_char_width = max_width / (len(line) * 0.6 if len(line) > 0 else 1)
+                    split_at = int(max_width / (pdf_canvas.stringWidth(" ", "Helvetica", 10) + 0.001) if avg_char_width > 0 else len(line))
+                    split_at = min(split_at, len(line) -1)
+                    if split_at <=0: split_at = len(line) # prevent infinite loop if line is too long with no spaces
 
-            for sub_line in sub_lines:
-                if current_line_on_page >= max_lines_per_page:
+                text_object.textLine(line[:split_at])
+                line = line[split_at:].lstrip()
+                current_y -= 14 # leading
+                if current_y < margin:
                     pdf_canvas.drawText(text_object)
                     pdf_canvas.showPage()
                     text_object = pdf_canvas.beginText()
-                    text_object.setFont(font_name, font_size)
-                    text_object.setTextOrigin(margin, page_height - margin - line_height)
-                    text_object.setLeading(line_height)
-                    current_line_on_page = 0
-                
-                text_object.textLine(sub_line)
-                current_line_on_page += 1
-        
-        pdf_canvas.drawText(text_object) 
+                    text_object.setFont("Helvetica", 10)
+                    text_object.setTextOrigin(inch, A4[1] - inch)
+                    text_object.setLeading(14)
+                    current_y = page_height - margin
+            
+            text_object.textLine(line)
+            current_y -= 14
+            if current_y < margin and line != lines[-1]: #Don't make new page for last line if it fits
+                pdf_canvas.drawText(text_object)
+                pdf_canvas.showPage()
+                text_object = pdf_canvas.beginText()
+                text_object.setFont("Helvetica", 10)
+                text_object.setTextOrigin(inch, A4[1] - inch)
+                text_object.setLeading(14)
+                current_y = page_height - margin
+
+        pdf_canvas.drawText(text_object)
         pdf_canvas.showPage()
 
-    def _add_text_file_to_pdf(self, file_path, pdf_canvas):
-        base_name = os.path.basename(file_path)
+    def _add_text_file_to_pdf_canvas(self, file_path, pdf_canvas):
         try:
-            try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    text_content = f.read()
-            except UnicodeDecodeError:
-                with open(file_path, 'r', encoding='latin-1') as f:
-                    text_content = f.read()
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            self._render_text_to_pdf_canvas(content, pdf_canvas, os.path.basename(file_path))
         except Exception as e:
-            raise RuntimeError(f"Fehler beim Lesen der Textdatei {base_name}: {e}")
-        
-        self._render_text_to_pdf_canvas(text_content, pdf_canvas, source_filename=base_name)
+            raise ValueError(f"Fehler beim Lesen der Textdatei {os.path.basename(file_path)}: {e}")
 
-    def _add_rtf_to_pdf(self, file_path, pdf_canvas):
-        base_name = os.path.basename(file_path)
+    def _add_rtf_to_pdf_canvas(self, file_path, pdf_canvas):
         try:
-            with open(file_path, 'r', encoding='latin-1') as f:
+            with open(file_path, 'r') as f:
                 rtf_content = f.read()
-        except UnicodeDecodeError:
-             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    rtf_content = f.read()
-             except Exception as e:
-                 raise RuntimeError(f"Fehler beim Lesen der RTF-Datei {base_name} (nach Fallback): {e}")
+            text_content = rtf_to_text(rtf_content)
+            self._render_text_to_pdf_canvas(text_content, pdf_canvas, os.path.basename(file_path))
         except Exception as e:
-            raise RuntimeError(f"Fehler beim Lesen der RTF-Datei {base_name}: {e}")
+            raise ValueError(f"Fehler beim Verarbeiten der RTF-Datei {os.path.basename(file_path)}: {e}")
 
+    def _convert_html_to_existing_pdf(self, html_file_path, output_pdf_path):
+        # Helper for xhtml2pdf to write to an existing (possibly temporary) PDF file path
         try:
-            plain_text = rtf_to_text(rtf_content)
+            with open(html_file_path, "r", encoding='utf-8') as html_file:
+                html_content = html_file.read()
+            with open(output_pdf_path, "wb") as pdf_file:
+                pisa_status = pisa.CreatePDF(html_content, dest=pdf_file, encoding='utf-8')
+            if pisa_status.err:
+                raise ValueError(f"xhtml2pdf Fehler: {pisa_status.err}")
         except Exception as e:
-            raise RuntimeError(f"Fehler beim Konvertieren von RTF zu Text für {base_name}: {e}")
-        
-        self._render_text_to_pdf_canvas(plain_text, pdf_canvas, source_filename=base_name)
+            raise ValueError(f"Fehler beim Konvertieren von HTML {os.path.basename(html_file_path)}: {e}")
 
-    def _add_svg_to_pdf(self, file_path, pdf_canvas):
+    def _add_svg_to_pdf_canvas(self, file_path, pdf_canvas):
         try:
             drawing = svg2rlg(file_path)
             if not drawing:
                 raise ValueError("SVG konnte nicht geladen oder geparst werden.")
-        except Exception as e:
-            raise RuntimeError(f"Fehler beim Laden der SVG-Datei {os.path.basename(file_path)}: {e}")
 
-        svg_width = drawing.width
-        svg_height = drawing.height
+            page_width, page_height = A4
+            drawing_width, drawing_height = drawing.width, drawing.height
+            
+            if drawing_width <= 0 or drawing_height <= 0:
+                 raise ValueError("SVG hat ungültige Dimensionen.")
 
-        if svg_width <= 0 or svg_height <= 0:
-            pdf_canvas.drawString(72, A4[1] - 72, f"SVG: {os.path.basename(file_path)}")
-            pdf_canvas.drawString(72, A4[1] - 90, "SVG hat keine Dimensionen oder ist leer.")
+            margin = inch
+            max_render_width = page_width - 2 * margin
+            max_render_height = page_height - 2 * margin
+
+            scale_w = max_render_width / drawing_width
+            scale_h = max_render_height / drawing_height
+            scale = min(scale_w, scale_h)
+            if scale <= 0: scale = 1 # Prevent negative or zero scaling
+
+            render_width = drawing_width * scale
+            render_height = drawing_height * scale
+
+            drawing.width, drawing.height = render_width, render_height
+            drawing.scale(scale, scale)
+            
+            x_pos = (page_width - render_width) / 2
+            y_pos = page_height - render_height - margin # Align top-ish
+            
+            from reportlab.graphics import renderPDF
+            renderPDF.draw(drawing, pdf_canvas, x_pos, y_pos)
             pdf_canvas.showPage()
-            return
-
-        page_width, page_height = A4
-        margin = 0.5 * inch
-
-        available_width = page_width - 2 * margin
-        available_height = page_height - 2 * margin
-
-        scale_w = available_width / svg_width
-        scale_h = available_height / svg_height
-        scale = min(scale_w, scale_h)
-
-        if scale <= 0: scale = 1
-        
-        scaled_width = svg_width * scale
-        scaled_height = svg_height * scale
-
-        pos_x = (page_width - scaled_width) / 2
-        pos_y = (page_height - scaled_height) / 2
-
-        drawing.scale(scale, scale)
-        drawing.width = scaled_width
-        drawing.height = scaled_height
-        
-        pdf_canvas.setPageSize((page_width, page_height))
-        drawing.drawOn(pdf_canvas, pos_x, pos_y)
-        pdf_canvas.showPage() 
+        except Exception as e:
+            raise ValueError(f"Fehler beim Verarbeiten der SVG-Datei {os.path.basename(file_path)}: {e}") 

@@ -1,124 +1,141 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from PyPDF2 import PdfReader, PdfWriter
 import os
-from utils.common_helpers import parse_page_ranges # Import the helper function
+from PyPDF2 import PdfReader, PdfWriter
+from PySide6.QtWidgets import (
+    QWidget, QPushButton, QLabel, QLineEdit,
+    QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QGroupBox, QApplication
+)
+from PySide6.QtCore import Qt
+from utils.common_helpers import parse_page_ranges # Assuming this remains compatible
 
-class SplitTab:
-    def __init__(self, parent_notebook, app_root):
+class SplitTab(QWidget):
+    def __init__(self, app_root=None):
+        super().__init__()
         self.app_root = app_root
-        self.split_frame = ttk.Frame(parent_notebook)
-
         self.split_input_pdf_path = None
-        self.split_selected_file_label = None
-        self.split_pages_entry = None
-        self.split_status_label = None
 
-        self._create_split_widgets()
+        self._init_ui()
 
-    def get_frame(self):
-        return self.split_frame
+    def _init_ui(self):
+        main_layout = QVBoxLayout(self)
 
-    def _create_split_widgets(self):
-        controls_frame = ttk.LabelFrame(self.split_frame, text="PDF auswählen und Seiten angeben")
-        controls_frame.pack(padx=10, pady=10, fill="x")
+        # --- Controls Group ---
+        controls_group = QGroupBox("PDF auswählen und Seiten/Bereiche für Extraktion angeben")
+        controls_layout = QVBoxLayout(controls_group)
 
-        file_select_frame = ttk.Frame(controls_frame)
-        file_select_frame.pack(fill="x", pady=5)
+        # File Selection
+        file_select_layout = QHBoxLayout()
+        self.select_button = QPushButton("PDF auswählen")
+        self.select_button.clicked.connect(self._select_pdf_for_split)
+        file_select_layout.addWidget(self.select_button)
 
-        select_button = ttk.Button(file_select_frame, text="PDF auswählen", command=self._select_pdf_for_split)
-        select_button.pack(side=tk.LEFT, padx=5)
+        self.split_selected_file_label = QLabel("Keine Datei ausgewählt.")
+        self.split_selected_file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        file_select_layout.addWidget(self.split_selected_file_label, 1) # Add stretch
+        controls_layout.addLayout(file_select_layout)
 
-        self.split_selected_file_label = ttk.Label(file_select_frame, text="Keine Datei ausgewählt.")
-        self.split_selected_file_label.pack(side=tk.LEFT, padx=5)
+        # Page Input
+        page_input_layout = QHBoxLayout()
+        pages_label = QLabel("Seiten/Bereiche (z.B. 1-3, 5, 7-9):")
+        page_input_layout.addWidget(pages_label)
 
-        page_input_frame = ttk.Frame(controls_frame)
-        page_input_frame.pack(fill="x", pady=5)
+        self.split_pages_entry = QLineEdit()
+        self.split_pages_entry.setPlaceholderText("z.B. 1-3, 5, 7-9")
+        page_input_layout.addWidget(self.split_pages_entry, 1) # Add stretch
+        controls_layout.addLayout(page_input_layout)
+        
+        main_layout.addWidget(controls_group)
 
-        pages_label = ttk.Label(page_input_frame, text="Seiten/Bereiche (z.B. 1-3, 5, 7-9):")
-        pages_label.pack(side=tk.LEFT, padx=5)
+        # --- Action Area ---
+        action_layout = QVBoxLayout()
+        self.extract_button = QPushButton("Seiten extrahieren und speichern")
+        self.extract_button.clicked.connect(self._execute_split_pdf)
+        action_layout.addWidget(self.extract_button)
 
-        self.split_pages_entry = ttk.Entry(page_input_frame, width=40)
-        self.split_pages_entry.pack(side=tk.LEFT, padx=5, expand=True, fill="x")
+        self.split_status_label = QLabel("")
+        self.split_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        action_layout.addWidget(self.split_status_label)
+        
+        main_layout.addLayout(action_layout)
+        main_layout.addStretch()
 
-        action_frame = ttk.Frame(self.split_frame)
-        action_frame.pack(padx=10, pady=10, fill="x")
-
-        extract_button = ttk.Button(action_frame, text="Seiten extrahieren und speichern", command=self._execute_split_pdf)
-        extract_button.pack(pady=5)
-
-        self.split_status_label = ttk.Label(action_frame, text="")
-        self.split_status_label.pack(pady=5)
+        self.setLayout(main_layout)
 
     def _select_pdf_for_split(self):
-        file_path = filedialog.askopenfilename(
-            title="PDF-Datei auswählen",
-            filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*"))
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "PDF-Datei auswählen",
+            "",  # Start directory
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
         )
         if file_path:
             self.split_input_pdf_path = file_path
-            self.split_selected_file_label.config(text=os.path.basename(file_path))
-            self.split_status_label.config(text="Datei ausgewählt. Seitenbereiche eingeben.")
+            self.split_selected_file_label.setText(os.path.basename(file_path))
+            self.split_status_label.setText("Datei ausgewählt. Seitenbereiche eingeben.")
         else:
             self.split_input_pdf_path = None
-            self.split_selected_file_label.config(text="Keine Datei ausgewählt.")
-            self.split_status_label.config(text="Dateiauswahl abgebrochen.")
+            self.split_selected_file_label.setText("Keine Datei ausgewählt.")
+            self.split_status_label.setText("Dateiauswahl abgebrochen.")
 
     def _execute_split_pdf(self):
         if not self.split_input_pdf_path:
-            messagebox.showwarning("Keine PDF ausgewählt", "Bitte wählen Sie zuerst eine PDF-Datei aus.")
+            QMessageBox.warning(self, "Keine PDF ausgewählt", "Bitte wählen Sie zuerst eine PDF-Datei aus.")
             return
 
-        pages_str = self.split_pages_entry.get()
+        pages_str = self.split_pages_entry.text()
         if not pages_str:
-            messagebox.showwarning("Keine Seiten angegeben", "Bitte geben Sie die zu extrahierenden Seitenzahlen oder Bereiche ein.")
+            QMessageBox.warning(self, "Keine Seiten angegeben", "Bitte geben Sie die zu extrahierenden Seitenzahlen oder Bereiche ein.")
             return
 
         try:
             input_pdf = PdfReader(self.split_input_pdf_path)
             total_pages = len(input_pdf.pages)
-            # Use the imported helper function
-            pages_to_extract = parse_page_ranges(pages_str, total_pages)
+            pages_to_extract_indices = parse_page_ranges(pages_str, total_pages) # Helper function returns 0-based indices
         except ValueError as e:
-            messagebox.showerror("Ungültige Seiteneingabe", str(e))
-            self.split_status_label.config(text=f"Fehler: {e}")
+            QMessageBox.critical(self, "Ungültige Seiteneingabe", str(e))
+            self.split_status_label.setText(f"Fehler: {e}")
             return
         except Exception as e: 
-            messagebox.showerror("Fehler beim Lesen der PDF", f"PDF konnte nicht gelesen werden: {e}")
-            self.split_status_label.config(text="Fehler beim Lesen der PDF.")
+            QMessageBox.critical(self, "Fehler beim Lesen der PDF", f"PDF konnte nicht gelesen werden: {e}")
+            self.split_status_label.setText("Fehler beim Lesen der PDF.")
             return
 
-        if not pages_to_extract:
-            messagebox.showinfo("Keine Seiten zu extrahieren", "Die angegebenen Seiten ergeben keine zu extrahierenden Seiten.")
-            self.split_status_label.config(text="Keine Seiten zum Extrahieren basierend auf der Eingabe.")
+        if not pages_to_extract_indices:
+            QMessageBox.information(self, "Keine Seiten zu extrahieren", "Die angegebenen Seiten ergeben keine zu extrahierenden Seiten.")
+            self.split_status_label.setText("Keine Seiten zum Extrahieren basierend auf der Eingabe.")
             return
 
-        output_filename = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*")) ,
-            title="Extrahierte Seiten speichern unter",
-            initialfile=f"{os.path.splitext(os.path.basename(self.split_input_pdf_path))[0]}_extrahiert.pdf"
+        initial_save_name = f"{os.path.splitext(os.path.basename(self.split_input_pdf_path))[0]}_extrahiert.pdf"
+        output_filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Extrahierte Seiten speichern unter",
+            os.path.join(os.path.dirname(self.split_input_pdf_path), initial_save_name),
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
         )
 
         if not output_filename:
-            self.split_status_label.config(text="Extraktion abgebrochen.")
+            self.split_status_label.setText("Extraktion abgebrochen.")
             return
 
         pdf_writer = PdfWriter()
         try:
-            self.split_status_label.config(text="Extrahiere Seiten...")
-            self.app_root.update_idletasks()
+            self.split_status_label.setText("Extrahiere Seiten...")
+            QApplication.processEvents() # Allow UI to update status label
 
-            for page_num in pages_to_extract:
-                pdf_writer.add_page(input_pdf.pages[page_num])
+            for page_index in pages_to_extract_indices:
+                pdf_writer.add_page(input_pdf.pages[page_index])
             
+            if len(pdf_writer.pages) == 0:
+                QMessageBox.warning(self, "Leeres Ergebnis", "Es wurden keine Seiten extrahiert, die PDF wäre leer. Datei nicht gespeichert.")
+                self.split_status_label.setText("Keine Seiten extrahiert. Vorgang abgebrochen.")
+                return
+
             with open(output_filename, 'wb') as out_pdf:
                 pdf_writer.write(out_pdf)
             
-            pdf_writer.close()
-            messagebox.showinfo("Erfolg", f"Seiten erfolgreich extrahiert nach {os.path.basename(output_filename)}")
-            self.split_status_label.config(text="Extraktion erfolgreich!")
+            # pdf_writer.close() # Not needed for PyPDF2.PdfWriter
+            QMessageBox.information(self, "Erfolg", f"Seiten erfolgreich extrahiert nach {os.path.basename(output_filename)}")
+            self.split_status_label.setText("Extraktion erfolgreich!")
 
         except Exception as e:
-            messagebox.showerror("Fehler beim Extrahieren der Seiten", f"Ein Fehler ist aufgetreten: {e}")
-            self.split_status_label.config(text="Fehler während der Extraktion.") 
+            QMessageBox.critical(self, "Fehler beim Extrahieren der Seiten", f"Ein Fehler ist aufgetreten: {e}")
+            self.split_status_label.setText(f"Fehler während der Extraktion: {e}") 

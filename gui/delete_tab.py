@@ -1,81 +1,101 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from PyPDF2 import PdfReader, PdfWriter
 import os
-from utils.common_helpers import parse_page_ranges # Import the helper function
+from PyPDF2 import PdfReader, PdfWriter
+from PySide6.QtWidgets import (
+    QWidget,
+    QPushButton,
+    QLabel,
+    QLineEdit,
+    QVBoxLayout,
+    QHBoxLayout,
+    QFileDialog,
+    QMessageBox,
+    QGroupBox
+)
+from PySide6.QtCore import Qt
+from utils.common_helpers import parse_page_ranges # Assuming this remains compatible
 
-class DeleteTab:
-    def __init__(self, parent_notebook, app_root):
-        self.app_root = app_root
-        self.delete_frame = ttk.Frame(parent_notebook)
-
+class DeleteTab(QWidget):
+    def __init__(self, app_root=None): # app_root might be needed for global app functions
+        super().__init__()
+        self.app_root = app_root # Store if needed, or remove if not used by Qt version
         self.delete_input_pdf_path = None
-        self.delete_selected_file_label = None
-        self.delete_pages_entry = None
-        self.delete_status_label = None
 
-        self._create_delete_widgets()
+        self._init_ui()
 
-    def get_frame(self):
-        return self.delete_frame
+    def _init_ui(self):
+        main_layout = QVBoxLayout(self)
 
-    def _create_delete_widgets(self):
-        controls_frame = ttk.LabelFrame(self.delete_frame, text="PDF auswählen und zu löschende Seiten angeben")
-        controls_frame.pack(padx=10, pady=10, fill="x")
+        # --- Controls Group ---
+        controls_group = QGroupBox("PDF auswählen und zu löschende Seiten angeben")
+        controls_layout = QVBoxLayout(controls_group)
 
-        file_select_frame = ttk.Frame(controls_frame)
-        file_select_frame.pack(fill="x", pady=5)
+        # File Selection
+        file_select_layout = QHBoxLayout()
+        self.select_button = QPushButton("PDF auswählen")
+        self.select_button.clicked.connect(self._select_pdf_for_delete)
+        file_select_layout.addWidget(self.select_button)
 
-        select_button = ttk.Button(file_select_frame, text="PDF auswählen", command=self._select_pdf_for_delete)
-        select_button.pack(side=tk.LEFT, padx=5)
+        self.delete_selected_file_label = QLabel("Keine Datei ausgewählt.")
+        self.delete_selected_file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        file_select_layout.addWidget(self.delete_selected_file_label, 1) # Add stretch
+        controls_layout.addLayout(file_select_layout)
 
-        self.delete_selected_file_label = ttk.Label(file_select_frame, text="Keine Datei ausgewählt.")
-        self.delete_selected_file_label.pack(side=tk.LEFT, padx=5)
+        # Page Input
+        page_input_layout = QHBoxLayout()
+        pages_label = QLabel("Zu löschende Seiten (z.B. 1, 3, 5-7):")
+        page_input_layout.addWidget(pages_label)
 
-        page_input_frame = ttk.Frame(controls_frame)
-        page_input_frame.pack(fill="x", pady=5)
+        self.delete_pages_entry = QLineEdit()
+        self.delete_pages_entry.setPlaceholderText("z.B. 1,3,5-7")
+        page_input_layout.addWidget(self.delete_pages_entry, 1) # Add stretch
+        controls_layout.addLayout(page_input_layout)
+        
+        main_layout.addWidget(controls_group)
 
-        pages_label = ttk.Label(page_input_frame, text="Zu löschende Seiten (z.B. 1, 3, 5-7):")
-        pages_label.pack(side=tk.LEFT, padx=5)
+        # --- Action Area ---
+        action_layout = QVBoxLayout() # Using QVBoxLayout for vertical arrangement of button and status
 
-        self.delete_pages_entry = ttk.Entry(page_input_frame, width=40)
-        self.delete_pages_entry.pack(side=tk.LEFT, padx=5, expand=True, fill="x")
+        self.delete_button = QPushButton("Seiten löschen und speichern")
+        self.delete_button.clicked.connect(self._execute_delete_pages)
+        action_layout.addWidget(self.delete_button)
 
-        action_frame = ttk.Frame(self.delete_frame)
-        action_frame.pack(padx=10, pady=10, fill="x")
+        self.delete_status_label = QLabel("")
+        self.delete_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        action_layout.addWidget(self.delete_status_label)
+        
+        main_layout.addLayout(action_layout)
+        main_layout.addStretch() # Pushes everything to the top
 
-        delete_button = ttk.Button(action_frame, text="Seiten löschen und speichern", command=self._execute_delete_pages)
-        delete_button.pack(pady=5)
-
-        self.delete_status_label = ttk.Label(action_frame, text="")
-        self.delete_status_label.pack(pady=5)
+        self.setLayout(main_layout)
 
     def _select_pdf_for_delete(self):
-        file_path = filedialog.askopenfilename(
-            title="PDF-Datei auswählen",
-            filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*"))
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "PDF-Datei auswählen",
+            "",  # Start directory
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
         )
         if file_path:
             self.delete_input_pdf_path = file_path
-            self.delete_selected_file_label.config(text=os.path.basename(file_path))
-            self.delete_status_label.config(text="Datei ausgewählt. Zu löschende Seiten eingeben.")
+            self.delete_selected_file_label.setText(os.path.basename(file_path))
+            self.delete_status_label.setText("Datei ausgewählt. Zu löschende Seiten eingeben.")
         else:
             self.delete_input_pdf_path = None
-            self.delete_selected_file_label.config(text="Keine Datei ausgewählt.")
-            self.delete_status_label.config(text="Dateiauswahl abgebrochen.")
+            self.delete_selected_file_label.setText("Keine Datei ausgewählt.")
+            self.delete_status_label.setText("Dateiauswahl abgebrochen.")
 
     def _parse_pages_to_delete(self, pages_str, total_pages):
-        # This method now directly uses the imported helper function
+        # This method directly uses the imported helper function
         return parse_page_ranges(pages_str, total_pages)
 
     def _execute_delete_pages(self):
         if not self.delete_input_pdf_path:
-            messagebox.showwarning("Keine PDF ausgewählt", "Bitte wählen Sie zuerst eine PDF-Datei aus.")
+            QMessageBox.warning(self, "Keine PDF ausgewählt", "Bitte wählen Sie zuerst eine PDF-Datei aus.")
             return
 
-        pages_str = self.delete_pages_entry.get()
+        pages_str = self.delete_pages_entry.text()
         if not pages_str:
-            messagebox.showwarning("Keine Seiten angegeben", "Bitte geben Sie die zu löschenden Seitenzahlen oder Bereiche ein.")
+            QMessageBox.warning(self, "Keine Seiten angegeben", "Bitte geben Sie die zu löschenden Seitenzahlen oder Bereiche ein.")
             return
 
         try:
@@ -83,57 +103,60 @@ class DeleteTab:
             total_pages = len(input_pdf.pages)
             pages_to_delete_indices = self._parse_pages_to_delete(pages_str, total_pages)
         except ValueError as e:
-            messagebox.showerror("Ungültige Seiteneingabe", str(e))
-            self.delete_status_label.config(text=f"Fehler: {e}")
+            QMessageBox.critical(self, "Ungültige Seiteneingabe", str(e))
+            self.delete_status_label.setText(f"Fehler: {e}")
             return
-        except Exception as e: 
-            messagebox.showerror("Fehler beim Lesen der PDF", f"PDF konnte nicht gelesen werden: {e}")
-            self.delete_status_label.config(text="Fehler beim Lesen der PDF.")
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler beim Lesen der PDF", f"PDF konnte nicht gelesen werden: {e}")
+            self.delete_status_label.setText("Fehler beim Lesen der PDF.")
             return
 
         if not pages_to_delete_indices:
-            messagebox.showinfo("Keine gültigen Seiten", "Keine gültigen Seiten zum Löschen angegeben.")
-            self.delete_status_label.config(text="Keine gültigen Seiten zum Löschen.")
+            QMessageBox.information(self, "Keine gültigen Seiten", "Keine gültigen Seiten zum Löschen angegeben.")
+            self.delete_status_label.setText("Keine gültigen Seiten zum Löschen.")
             return
         
         if all(p_idx in pages_to_delete_indices for p_idx in range(total_pages)):
-            messagebox.showwarning("Alle Seiten ausgewählt", "Sie haben alle Seiten zum Löschen ausgewählt. Dies würde zu einer leeren PDF führen.")
-            self.delete_status_label.config(text="Kann nicht alle Seiten löschen.")
+            QMessageBox.warning(self, "Alle Seiten ausgewählt", "Sie haben alle Seiten zum Löschen ausgewählt. Dies würde zu einer leeren PDF führen.")
+            self.delete_status_label.setText("Kann nicht alle Seiten löschen.")
             return
 
-        output_filename = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=(("PDF-Dateien", "*.pdf"), ("Alle Dateien", "*.*")) ,
-            title="Geänderte PDF speichern unter",
-            initialfile=f"{os.path.splitext(os.path.basename(self.delete_input_pdf_path))[0]}_geändert.pdf"
+        initial_name = f"{os.path.splitext(os.path.basename(self.delete_input_pdf_path))[0]}_geändert.pdf"
+        output_filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Geänderte PDF speichern unter",
+            os.path.join(os.path.dirname(self.delete_input_pdf_path), initial_name), # Suggest in same dir with new name
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
         )
 
         if not output_filename:
-            self.delete_status_label.config(text="Löschen abgebrochen.")
+            self.delete_status_label.setText("Speichern abgebrochen.") # Changed from Löschen to Speichern for clarity
             return
 
         pdf_writer = PdfWriter()
         try:
-            self.delete_status_label.config(text="Lösche Seiten...")
-            self.app_root.update_idletasks()
+            self.delete_status_label.setText("Lösche Seiten...")
+            # self.app_root.update_idletasks() # Not directly applicable/needed in Qt in the same way
+            # Qt processes events in its event loop. For UI updates during long tasks,
+            # consider QProgressDialog or threading if it becomes an issue.
 
             for i in range(total_pages):
                 if i not in pages_to_delete_indices:
                     pdf_writer.add_page(input_pdf.pages[i])
             
             if len(pdf_writer.pages) == 0:
-                 messagebox.showwarning("Leeres Ergebnis", "Alle angegebenen Seiten wurden gelöscht, was zu einer leeren PDF führt. Datei nicht gespeichert.")
-                 self.delete_status_label.config(text="Die resultierende PDF wäre leer. Vorgang abgebrochen.")
-                 pdf_writer.close()
+                 QMessageBox.warning(self, "Leeres Ergebnis", "Alle angegebenen Seiten wurden gelöscht, was zu einer leeren PDF führt. Datei nicht gespeichert.")
+                 self.delete_status_label.setText("Die resultierende PDF wäre leer. Vorgang abgebrochen.")
+                 # pdf_writer.close() # PdfWriter doesn't have a close() method in PyPDF2 3.0.0+
                  return
 
             with open(output_filename, 'wb') as out_pdf:
                 pdf_writer.write(out_pdf)
             
-            pdf_writer.close()
-            messagebox.showinfo("Erfolg", f"Seiten erfolgreich gelöscht. Gespeichert unter {os.path.basename(output_filename)}")
-            self.delete_status_label.config(text="Löschen erfolgreich!")
+            # pdf_writer.close() # Not needed for PdfWriter
+            QMessageBox.information(self, "Erfolg", f"Seiten erfolgreich gelöscht. Gespeichert unter {os.path.basename(output_filename)}")
+            self.delete_status_label.setText("Löschen erfolgreich!")
 
         except Exception as e:
-            messagebox.showerror("Fehler beim Löschen der Seiten", f"Ein Fehler ist aufgetreten: {e}")
-            self.delete_status_label.config(text="Fehler während des Löschens.") 
+            QMessageBox.critical(self, "Fehler beim Löschen der Seiten", f"Ein Fehler ist aufgetreten: {e}")
+            self.delete_status_label.setText("Fehler während des Löschens.") 

@@ -7,3 +7,5 @@ svglib>=1.5.1
 pillow-heif>=0.10.0
 pyinstaller>=5.0.0
 tkinterdnd2 
+PySide6>=6.0.0
+pyqtdarktheme==2.1.0 
