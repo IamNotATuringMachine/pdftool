@@ -34,7 +34,7 @@ ACTUALLY_SUPPORTED_FILE_TYPES = [
 ]
 
 ALL_SUPPORTED_EXTENSIONS_DESC = "Alle unterstützten Dateien"
-ALL_SUPPORTED_EXTENSIONS_PATTERNS = "*.doc *.docx *.xls *.xlsx *.ppt *.pptx *.jpg *.jpeg *.png *.gif *.tif *.tiff *.bmp *.heic *.heif *.svg *.txt *.rtf *.odt *.ods *.odp *.html *.htm *.pub *.vsd *.vsdx *.eml *.msg"
+ALL_SUPPORTED_EXTENSIONS_PATTERNS = "*.pdf *.doc *.docx *.xls *.xlsx *.ppt *.pptx *.jpg *.jpeg *.png *.gif *.tif *.tiff *.bmp *.heic *.heif *.svg *.txt *.rtf *.odt *.ods *.odp *.html *.htm *.pub *.vsd *.vsdx *.eml *.msg"
 
 # Create a tuple for filetypes dialog, combining all supported and individual types
 FILETYPES_FOR_DIALOG = [(ALL_SUPPORTED_EXTENSIONS_DESC, ALL_SUPPORTED_EXTENSIONS_PATTERNS)] + SUPPORTED_FILE_TYPES
