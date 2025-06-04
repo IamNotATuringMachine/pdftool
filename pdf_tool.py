@@ -3,6 +3,7 @@ from tkinter import ttk, filedialog, messagebox
 from PyPDF2 import PdfWriter, PdfReader # Added PdfReader
 from PIL import Image, UnidentifiedImageError # Added UnidentifiedImageError
 import os # For path manipulations
+from tkinterdnd2 import DND_FILES, TkinterDnD # Added for Drag and Drop
 
 class PDFToolApp:
     def __init__(self, root):
@@ -64,6 +65,10 @@ class PDFToolApp:
 
         move_down_button = ttk.Button(buttons_frame, text="Nach unten", command=self._move_merge_item_down) # Translated
         move_down_button.pack(fill="x", pady=2)
+        
+        # Register merge_listbox for drag and drop
+        self.merge_listbox.drop_target_register(DND_FILES)
+        self.merge_listbox.dnd_bind('<<Drop>>', self._handle_merge_drop)
         
         # Merge button and status
         action_frame = ttk.Frame(self.merge_frame)
@@ -430,6 +435,10 @@ class PDFToolApp:
         jpg_scrollbar.pack(side=tk.LEFT, fill="y")
         self.jpg_listbox.config(yscrollcommand=jpg_scrollbar.set)
 
+        # Register jpg_listbox for drag and drop
+        self.jpg_listbox.drop_target_register(DND_FILES)
+        self.jpg_listbox.dnd_bind('<<Drop>>', self._handle_jpg_drop)
+
         buttons_frame = ttk.Frame(controls_frame)
         buttons_frame.pack(fill="x", pady=5)
 
@@ -517,6 +526,58 @@ class PDFToolApp:
         else:
             messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
 
+    def _parse_dropped_files(self, event_data):
+        # event.data might be like: "{/path/to/file with spaces.pdf} {/another/path/file.jpg}"
+        # Or on some systems, just a list of paths separated by spaces if they don't contain spaces themselves.
+        # A more robust way is to look for "{" and "}"
+        files = []
+        if '{' in event_data and '}' in event_data:
+            # Paths are enclosed in braces, possibly with spaces
+            raw_paths = event_data.strip().split('} {')
+            for raw_path in raw_paths:
+                clean_path = raw_path.replace('{', '').replace('}', '').strip()
+                if clean_path:
+                    files.append(clean_path)
+        else:
+            # Assume space-separated paths (might fail for paths with spaces if not braced)
+            # This is a fallback, TkinterDnD usually braces paths with spaces.
+            files = [f for f in event_data.split(' ') if f]
+        return files
+
+    def _handle_merge_drop(self, event):
+        dropped_files = self._parse_dropped_files(event.data)
+        added_count = 0
+        if dropped_files:
+            for file_path in dropped_files:
+                if file_path.lower().endswith(".pdf"):
+                    if file_path not in self.selected_merge_files:
+                        self.selected_merge_files.append(file_path)
+                        self.merge_listbox.insert(tk.END, os.path.basename(file_path))
+                        added_count += 1
+            if added_count > 0:
+                self.merge_status_label.config(text=f"{added_count} PDF-Datei(en) per Drag & Drop hinzugefügt.")
+            else:
+                self.merge_status_label.config(text="Keine neuen PDF-Dateien per Drag & Drop hinzugefügt.")
+        else:
+            self.merge_status_label.config(text="Keine Dateien im Drop-Event gefunden.")
+
+    def _handle_jpg_drop(self, event):
+        dropped_files = self._parse_dropped_files(event.data)
+        added_count = 0
+        if dropped_files:
+            for file_path in dropped_files:
+                if file_path.lower().endswith((".jpg", ".jpeg")):
+                    if file_path not in self.selected_jpg_files:
+                        self.selected_jpg_files.append(file_path)
+                        self.jpg_listbox.insert(tk.END, os.path.basename(file_path))
+                        added_count += 1
+            if added_count > 0:
+                self.jpg_to_pdf_status_label.config(text=f"{added_count} JPG-Datei(en) per Drag & Drop hinzugefügt.")
+            else:
+                self.jpg_to_pdf_status_label.config(text="Keine neuen JPG-Dateien per Drag & Drop hinzugefügt.")
+        else:
+            self.jpg_to_pdf_status_label.config(text="Keine Dateien im Drop-Event gefunden.")
+
     def _execute_jpg_to_pdf(self):
         if not self.selected_jpg_files:
             messagebox.showwarning("Keine JPG-Dateien", "Bitte wählen Sie mindestens eine JPG-Datei zur Konvertierung aus.") # Translated
@@ -575,6 +636,6 @@ class PDFToolApp:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    root = TkinterDnD.Tk() # Changed tk.Tk() to TkinterDnD.Tk()
     app = PDFToolApp(root)
     root.mainloop() 
