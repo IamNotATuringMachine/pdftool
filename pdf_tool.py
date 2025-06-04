@@ -509,22 +509,74 @@ class PDFToolApp:
             self.delete_status_label.config(text="Fehler während des Löschens.") # Translated
 
     def _create_file_to_pdf_widgets(self): # Renamed method
+        # Frame for view toggle buttons
+        view_toggle_frame = ttk.Frame(self.file_to_pdf_frame)
+        view_toggle_frame.pack(padx=10, pady=5, fill="x")
+        
+        ttk.Label(view_toggle_frame, text="Ansicht:").pack(side=tk.LEFT, padx=5)
+        
+        self.view_mode_var = tk.StringVar(value="list")
+        list_view_radio = ttk.Radiobutton(view_toggle_frame, text="Liste", variable=self.view_mode_var, 
+                                         value="list", command=self._toggle_view_mode)
+        list_view_radio.pack(side=tk.LEFT, padx=5)
+        
+        icon_view_radio = ttk.Radiobutton(view_toggle_frame, text="Symbole", variable=self.view_mode_var, 
+                                         value="icons", command=self._toggle_view_mode)
+        icon_view_radio.pack(side=tk.LEFT, padx=5)
+        
         # Frame for file list and controls
         controls_frame = ttk.LabelFrame(self.file_to_pdf_frame, text="Dateien für Konvertierung") # Translated
-        controls_frame.pack(padx=10, pady=10, fill="x")
+        controls_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
+        # Create container for both views
+        self.views_container = ttk.Frame(controls_frame)
+        self.views_container.pack(side=tk.LEFT, fill="both", expand=True, padx=5, pady=5)
+        
+        # List view (existing)
+        self.list_view_frame = ttk.Frame(self.views_container)
+        self.list_view_frame.pack(fill="both", expand=True)
+        
         # Listbox to display selected files
-        self.file_to_pdf_listbox = tk.Listbox(controls_frame, selectmode=tk.SINGLE, height=10) # Restored original height
-        self.file_to_pdf_listbox.pack(side=tk.LEFT, fill="both", expand=True, padx=5, pady=5)
+        self.file_to_pdf_listbox = tk.Listbox(self.list_view_frame, selectmode=tk.SINGLE, height=10) # Restored original height
+        self.file_to_pdf_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        
+        # Bind listbox selection event
+        self.file_to_pdf_listbox.bind('<<ListboxSelect>>', self._on_listbox_select)
 
         # Scrollbar for the listbox
-        file_to_pdf_scrollbar = ttk.Scrollbar(controls_frame, orient="vertical", command=self.file_to_pdf_listbox.yview)
-        file_to_pdf_scrollbar.pack(side=tk.LEFT, fill="y", pady=5)
+        file_to_pdf_scrollbar = ttk.Scrollbar(self.list_view_frame, orient="vertical", command=self.file_to_pdf_listbox.yview)
+        file_to_pdf_scrollbar.pack(side=tk.LEFT, fill="y")
         self.file_to_pdf_listbox.config(yscrollcommand=file_to_pdf_scrollbar.set)
+        
+        # Icon view (new)
+        self.icon_view_frame = ttk.Frame(self.views_container)
+        
+        # Create scrollable canvas for icons
+        self.icon_canvas = tk.Canvas(self.icon_view_frame, bg="white")
+        self.icon_scrollbar = ttk.Scrollbar(self.icon_view_frame, orient="vertical", command=self.icon_canvas.yview)
+        self.icon_scrollable_frame = ttk.Frame(self.icon_canvas)
+        
+        self.icon_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.icon_canvas.configure(scrollregion=self.icon_canvas.bbox("all"))
+        )
+        
+        self.icon_canvas.create_window((0, 0), window=self.icon_scrollable_frame, anchor="nw")
+        self.icon_canvas.configure(yscrollcommand=self.icon_scrollbar.set)
+        
+        self.icon_canvas.pack(side="left", fill="both", expand=True)
+        self.icon_scrollbar.pack(side="right", fill="y")
+        
+        # Bind mousewheel to canvas
+        self.icon_canvas.bind("<MouseWheel>", self._on_mousewheel)
+        
+        # Initialize selected file index for icon view
+        self.selected_file_index = -1
+        self.icon_buttons = []
 
         # Frame for buttons
         buttons_frame = ttk.Frame(controls_frame)
-        buttons_frame.pack(side=tk.LEFT, fill="y", padx=5)
+        buttons_frame.pack(side=tk.RIGHT, fill="y", padx=5)
 
         add_button = ttk.Button(buttons_frame, text="Dateien hinzufügen", command=self._add_files_to_convert_list) # Renamed method & text
         add_button.pack(fill="x", pady=2)
@@ -538,9 +590,12 @@ class PDFToolApp:
         move_down_button = ttk.Button(buttons_frame, text="Nach unten", command=self._move_convert_item_down) # Renamed method
         move_down_button.pack(fill="x", pady=2)
         
-        # Register listbox for drag and drop
+        # Register both views for drag and drop
         self.file_to_pdf_listbox.drop_target_register(DND_FILES) # Renamed
         self.file_to_pdf_listbox.dnd_bind('<<Drop>>', self._handle_file_drop) # Renamed method
+        
+        self.icon_canvas.drop_target_register(DND_FILES)
+        self.icon_canvas.dnd_bind('<<Drop>>', self._handle_file_drop)
         
         # Convert button and status
         options_frame = ttk.Frame(self.file_to_pdf_frame) # Added options frame
@@ -562,6 +617,129 @@ class PDFToolApp:
 
         self.file_conversion_status_label = ttk.Label(action_frame, text="") # Renamed
         self.file_conversion_status_label.pack(pady=5)
+        
+        # Initialize view mode
+        self._toggle_view_mode()
+
+    def _toggle_view_mode(self):
+        """Toggle between list and icon view modes"""
+        if self.view_mode_var.get() == "list":
+            self.icon_view_frame.pack_forget()
+            self.list_view_frame.pack(fill="both", expand=True)
+        else:
+            self.list_view_frame.pack_forget()
+            self.icon_view_frame.pack(fill="both", expand=True)
+            self._refresh_icon_view()
+    
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling in icon view"""
+        self.icon_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+    
+    def _get_file_icon(self, file_path):
+        """Get appropriate icon text/symbol for file type"""
+        _, ext = os.path.splitext(file_path.lower())
+        
+        icon_map = {
+            '.pdf': '📄',
+            '.jpg': '🖼️', '.jpeg': '🖼️', '.png': '🖼️', '.bmp': '🖼️', 
+            '.gif': '🖼️', '.tiff': '🖼️', '.tif': '🖼️', '.heic': '🖼️', '.heif': '🖼️',
+            '.txt': '📝',
+            '.rtf': '📝',
+            '.html': '🌐', '.htm': '🌐',
+            '.svg': '🎨',
+            '.doc': '📄', '.docx': '📄',
+            '.xls': '📊', '.xlsx': '📊',
+            '.ppt': '📊', '.pptx': '📊',
+            '.odt': '📄', '.ods': '📊', '.odp': '📊'
+        }
+        
+        return icon_map.get(ext, '📁')
+    
+    def _refresh_icon_view(self):
+        """Refresh the icon view with current files"""
+        # Clear existing icons
+        for widget in self.icon_scrollable_frame.winfo_children():
+            widget.destroy()
+        self.icon_buttons.clear()
+        
+        # Create icons for each file
+        row, col = 0, 0
+        max_cols = 4  # Number of icons per row
+        
+        for i, file_path in enumerate(self.selected_files_for_conversion):
+            icon_frame = ttk.Frame(self.icon_scrollable_frame, relief="raised", borderwidth=1)
+            icon_frame.grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+            
+            # File icon
+            icon_text = self._get_file_icon(file_path)
+            icon_label = ttk.Label(icon_frame, text=icon_text, font=("Arial", 24))
+            icon_label.pack(pady=5)
+            
+            # File name (truncated if too long)
+            filename = os.path.basename(file_path)
+            if len(filename) > 15:
+                display_name = filename[:12] + "..."
+            else:
+                display_name = filename
+            
+            name_label = ttk.Label(icon_frame, text=display_name, font=("Arial", 8), wraplength=80)
+            name_label.pack(pady=2)
+            
+            # Make the frame clickable
+            def make_click_handler(index):
+                def on_click(event):
+                    self._select_icon(index)
+                return on_click
+            
+            click_handler = make_click_handler(i)
+            icon_frame.bind("<Button-1>", click_handler)
+            icon_label.bind("<Button-1>", click_handler)
+            name_label.bind("<Button-1>", click_handler)
+            
+            # Store reference to the frame
+            self.icon_buttons.append(icon_frame)
+            
+            col += 1
+            if col >= max_cols:
+                col = 0
+                row += 1
+        
+        # Configure grid weights for proper resizing
+        for i in range(max_cols):
+            self.icon_scrollable_frame.columnconfigure(i, weight=1)
+        
+        # Update scroll region
+        self.icon_scrollable_frame.update_idletasks()
+        self.icon_canvas.configure(scrollregion=self.icon_canvas.bbox("all"))
+    
+    def _select_icon(self, index):
+        """Select an icon in the icon view"""
+        # Reset all icon frames to normal appearance
+        for frame in self.icon_buttons:
+            frame.configure(relief="raised", borderwidth=1)
+        
+        # Highlight selected frame
+        if 0 <= index < len(self.icon_buttons):
+            self.icon_buttons[index].configure(relief="solid", borderwidth=2)
+            self.selected_file_index = index
+            
+            # Also update listbox selection for consistency
+            self.file_to_pdf_listbox.selection_clear(0, tk.END)
+            self.file_to_pdf_listbox.selection_set(index)
+    
+    def _get_current_selection_index(self):
+        """Get the currently selected file index from either view"""
+        if self.view_mode_var.get() == "list":
+            selection = self.file_to_pdf_listbox.curselection()
+            return selection[0] if selection else -1
+        else:
+            return self.selected_file_index
+    
+    def _on_listbox_select(self, event):
+        """Handle selection event from the listbox"""
+        selected_indices = self.file_to_pdf_listbox.curselection()
+        if selected_indices:
+            self.selected_file_index = selected_indices[0]
 
     def _add_files_to_convert_list(self): # Renamed method
         files = filedialog.askopenfilenames(
@@ -574,48 +752,72 @@ class PDFToolApp:
                     self.selected_files_for_conversion.append(file_path) # Renamed
                     self.file_to_pdf_listbox.insert(tk.END, os.path.basename(file_path)) # Renamed
             self.file_conversion_status_label.config(text=f"{len(files)} Datei(en) hinzugefügt.") # Renamed
+            
+            # Refresh icon view if in icon mode
+            if self.view_mode_var.get() == "icons":
+                self._refresh_icon_view()
 
     def _remove_file_from_convert_list(self): # Renamed method
-        selected_index = self.file_to_pdf_listbox.curselection() # Renamed
-        if selected_index:
-            index = selected_index[0]
-            del self.selected_files_for_conversion[index] # Renamed
-            self.file_to_pdf_listbox.delete(index) # Renamed
+        selected_index = self._get_current_selection_index()
+        if selected_index >= 0:
+            del self.selected_files_for_conversion[selected_index] # Renamed
+            self.file_to_pdf_listbox.delete(selected_index) # Renamed
             self.file_conversion_status_label.config(text="Datei entfernt.") # Renamed
+            
+            # Reset selection
+            self.selected_file_index = -1
+            
+            # Refresh icon view if in icon mode
+            if self.view_mode_var.get() == "icons":
+                self._refresh_icon_view()
         else:
             messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Entfernen aus.")
 
     def _move_convert_item_up(self): # Renamed method
-        selected_index = self.file_to_pdf_listbox.curselection() # Renamed
-        if selected_index:
-            index = selected_index[0]
-            if index > 0:
+        selected_index = self._get_current_selection_index()
+        if selected_index >= 0:
+            if selected_index > 0:
                 # Swap in the main list
-                self.selected_files_for_conversion[index], self.selected_files_for_conversion[index-1] = \
-                    self.selected_files_for_conversion[index-1], self.selected_files_for_conversion[index]
+                self.selected_files_for_conversion[selected_index], self.selected_files_for_conversion[selected_index-1] = \
+                    self.selected_files_for_conversion[selected_index-1], self.selected_files_for_conversion[selected_index]
                 # Update listbox
-                text = self.file_to_pdf_listbox.get(index) # Renamed
-                self.file_to_pdf_listbox.delete(index) # Renamed
-                self.file_to_pdf_listbox.insert(index-1, text) # Renamed
-                self.file_to_pdf_listbox.selection_set(index-1) # Renamed
+                text = self.file_to_pdf_listbox.get(selected_index) # Renamed
+                self.file_to_pdf_listbox.delete(selected_index) # Renamed
+                self.file_to_pdf_listbox.insert(selected_index-1, text) # Renamed
+                self.file_to_pdf_listbox.selection_set(selected_index-1) # Renamed
                 self.file_conversion_status_label.config(text="Datei nach oben verschoben.") # Renamed
+                
+                # Update selection index for icon view
+                self.selected_file_index = selected_index - 1
+                
+                # Refresh icon view if in icon mode
+                if self.view_mode_var.get() == "icons":
+                    self._refresh_icon_view()
+                    self._select_icon(selected_index - 1)
         else:
             messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
 
     def _move_convert_item_down(self): # Renamed method
-        selected_index = self.file_to_pdf_listbox.curselection() # Renamed
-        if selected_index:
-            index = selected_index[0]
-            if index < self.file_to_pdf_listbox.size() - 1: # Renamed
+        selected_index = self._get_current_selection_index()
+        if selected_index >= 0:
+            if selected_index < len(self.selected_files_for_conversion) - 1:
                 # Swap in the main list
-                self.selected_files_for_conversion[index], self.selected_files_for_conversion[index+1] = \
-                    self.selected_files_for_conversion[index+1], self.selected_files_for_conversion[index]
+                self.selected_files_for_conversion[selected_index], self.selected_files_for_conversion[selected_index+1] = \
+                    self.selected_files_for_conversion[selected_index+1], self.selected_files_for_conversion[selected_index]
                 # Update listbox
-                text = self.file_to_pdf_listbox.get(index) # Renamed
-                self.file_to_pdf_listbox.delete(index) # Renamed
-                self.file_to_pdf_listbox.insert(index+1, text) # Renamed
-                self.file_to_pdf_listbox.selection_set(index+1) # Renamed
-                self.file_conversion_status_label.config(text="Datei nach unten verschoben.") # Renamed
+                text = self.file_to_pdf_listbox.get(selected_index)
+                self.file_to_pdf_listbox.delete(selected_index)
+                self.file_to_pdf_listbox.insert(selected_index+1, text)
+                self.file_to_pdf_listbox.selection_set(selected_index+1)
+                self.file_conversion_status_label.config(text="Datei nach unten verschoben.")
+                
+                # Update selection index for icon view
+                self.selected_file_index = selected_index + 1
+                
+                # Refresh icon view if in icon mode
+                if self.view_mode_var.get() == "icons":
+                    self._refresh_icon_view()
+                    self._select_icon(selected_index + 1)
         else:
             messagebox.showwarning("Keine Auswahl", "Bitte wählen Sie eine Datei zum Verschieben aus.")
 
@@ -677,6 +879,10 @@ class PDFToolApp:
                 if unsupported_files:
                     status_msg += f" Nicht unterstützte Dateien: {', '.join(unsupported_files)}"
                 self.file_conversion_status_label.config(text=status_msg) 
+                
+                # Refresh icon view if in icon mode
+                if self.view_mode_var.get() == "icons":
+                    self._refresh_icon_view()
             elif unsupported_files:
                  self.file_conversion_status_label.config(text=f"Keine unterstützten Dateien per Drag & Drop hinzugefügt. Nicht unterstützt: {', '.join(unsupported_files)}")
             elif not dropped_files: 
