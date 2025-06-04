@@ -2,6 +2,8 @@ import os
 import io
 import shutil # For copying PDFs in separate processing
 import tempfile
+import subprocess # Added
+import platform # Added
 from PyPDF2 import PdfWriter, PdfReader 
 from PIL import Image, UnidentifiedImageError, ImageSequence
 from xhtml2pdf import pisa
@@ -29,8 +31,42 @@ from utils.constants import (
     TEXT_EXTENSIONS,
     RTF_EXTENSIONS,
     HTML_EXTENSIONS,
-    SVG_EXTENSIONS
+    SVG_EXTENSIONS,
+    MS_WORD_EXTENSIONS, # Added
+    MS_EXCEL_EXTENSIONS, # Added
+    MS_POWERPOINT_EXTENSIONS, # Added
+    ODF_TEXT_EXTENSIONS, # Added
+    ODF_SPREADSHEET_EXTENSIONS, # Added
+    ODF_PRESENTATION_EXTENSIONS # Added
 )
+
+from gui.modify_pages_tab import ModifyPagesTab # Added import
+
+# Conditional imports for Windows-specific COM libraries and converters
+if os.name == 'nt':
+    try:
+        import win32com.client
+    except ImportError:
+        win32com = None
+    try:
+        import pythoncom
+    except ImportError:
+        pythoncom = None
+    try:
+        from docx2pdf import convert as convert_docx_to_pdf
+    except ImportError:
+        convert_docx_to_pdf = None
+    try:
+        # pptxtopdf expects input_dir and output_dir
+        # We'll need to wrap its usage carefully
+        from pptxtopdf import convert as pptxtopdf_convert_bulk 
+    except ImportError:
+        pptxtopdf_convert_bulk = None
+else:
+    win32com = None
+    pythoncom = None
+    convert_docx_to_pdf = None
+    pptxtopdf_convert_bulk = None
 
 class FileProcessingTab(QWidget): # Renamed class
     def __init__(self, app_root=None):
@@ -42,6 +78,16 @@ class FileProcessingTab(QWidget): # Renamed class
         self._init_ui()
         if self.app_root:
             self.update_view_mode(self.app_root.current_view_mode)
+
+        # --- Dependency Status ---
+        self.soffice_path = self._find_libreoffice_soffice()
+        self.msword_available = self._is_msoffice_app_available("Word.Application")
+        self.msexcel_available = self._is_msoffice_app_available("Excel.Application")
+        self.mspowerpoint_available = self._is_msoffice_app_available("PowerPoint.Application")
+
+        # Optionally, display status or log it
+        self._log_dependency_status()
+        # --- End Dependency Status ---
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -102,6 +148,14 @@ class FileProcessingTab(QWidget): # Renamed class
         action_layout.addWidget(self.processing_status_label)
         main_layout.addLayout(action_layout)
 
+        # --- Add ModifyPagesTab section ---
+        modify_pages_group = QGroupBox("Einzelnes PDF bearbeiten (Seiten löschen/extrahieren)")
+        modify_pages_layout = QVBoxLayout(modify_pages_group)
+        self.modify_pages_widget = ModifyPagesTab(app_root=self.app_root) # Instantiate ModifyPagesTab
+        modify_pages_layout.addWidget(self.modify_pages_widget)
+        main_layout.addWidget(modify_pages_group)
+        # --- End ModifyPagesTab section ---
+
     def _prompt_and_remove_selected_files_on_key_press(self):
         if not self.file_list_widget.selectedItems():
             return
@@ -160,7 +214,7 @@ class FileProcessingTab(QWidget): # Renamed class
                     return True # Event handled by filter
                 else:
                     event.ignore()
-                    return True # Event handled by filter
+                    return True
 
             elif event.type() == QEvent.DragMove:
                 # Similar logic to DragEnter, could be simplified if DragEnter already set the stage
@@ -360,10 +414,27 @@ class FileProcessingTab(QWidget): # Renamed class
     def _execute_processing(self): # Renamed method
         selected_qlist_items = self.file_list_widget.selectedItems()
         if not selected_qlist_items:
-            QMessageBox.warning(self, "Keine Auswahl", "Bitte wählen Sie Dateien aus der Liste für die Verarbeitung aus.")
+            # Show detailed message about what formats are supported
+            detailed_info = self._get_conversion_capability_info()
+            self._show_detailed_error(
+                "Keine Auswahl", 
+                "Bitte wählen Sie Dateien aus der Liste für die Verarbeitung aus.",
+                detailed_info
+            )
             return
 
         files_to_actually_process = [item.data(Qt.ItemDataRole.UserRole) for item in selected_qlist_items]
+
+        # Check if all selected files exist
+        missing_files = [f for f in files_to_actually_process if not os.path.exists(f)]
+        if missing_files:
+            missing_list = "\n".join([f"• {os.path.basename(f)}" for f in missing_files])
+            self._show_detailed_error(
+                "Fehlende Dateien",
+                f"{len(missing_files)} Datei(en) wurden nicht gefunden:",
+                f"Fehlende Dateien:\n{missing_list}"
+            )
+            return
 
         # self._update_internal_file_list_from_widget() # Ensure order is correct - order is from selection now
 
@@ -375,229 +446,308 @@ class FileProcessingTab(QWidget): # Renamed class
         else:
             self._process_files_to_separate_pdfs(files_to_actually_process) # Pass selected files
 
-    def _process_files_to_single_pdf(self, files_to_process): # Added files_to_process parameter
-        output_filename, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Zusammengeführte PDF speichern unter", 
-            "zusammengefuehrt.pdf", 
-            "PDF-Dateien (*.pdf)"
-        )
-        if not output_filename:
-            self.processing_status_label.setText("Speichern abgebrochen.")
+    def _process_files_to_single_pdf(self, files_to_process):
+        if not files_to_process:
+            self.processing_status_label.setText("Keine Dateien zum Verarbeiten ausgewählt.")
             return
 
-        merger = PdfWriter()
-        skipped_files = []
-        processed_count = 0
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            for i, file_path in enumerate(files_to_process): # Use passed files_to_process
-                _, ext = os.path.splitext(file_path.lower())
-                QApplication.processEvents()
-                self.processing_status_label.setText(f"Verarbeite: {os.path.basename(file_path)}...")
-
-                if ext == ".pdf":
-                    try:
-                        # Validate PDF and handle encryption
-                        reader_check = PdfReader(file_path)
-                        if reader_check.is_encrypted: # Basic check
-                            try:
-                                # Attempt to decrypt with an empty password, or just check pages
-                                if reader_check.decrypt('') != 1 and len(reader_check.pages) == 0 : # PyPDF2 decrypt: 1=success, 2=owner_pass, 0=failure
-                                     raise Exception("Failed to decrypt with empty password or no pages found.")
-                            except Exception as e_decrypt:
-                                print(f"Skipping encrypted/unreadable PDF {file_path}: {e_decrypt}")
-                                QMessageBox.warning(self, "Verschlüsselte PDF", f"PDF {os.path.basename(file_path)} ist verschlüsselt oder unlesbar und wird übersprungen: {e_decrypt}")
-                                skipped_files.append(os.path.basename(file_path))
-                                continue
-                        merger.append(file_path)
-                        processed_count += 1
-                    except Exception as e:
-                        print(f"Error appending PDF {file_path}: {e}")
-                        QMessageBox.warning(self, "PDF Fehler", f"PDF {os.path.basename(file_path)} konnte nicht direkt hinzugefügt werden und wird übersprungen: {e}")
-                        skipped_files.append(os.path.basename(file_path))
-                    continue # Next file
-
-                # --- Existing conversion logic for non-PDFs, outputting to temp_pdf_path ---
-                temp_pdf_path = os.path.join(temp_dir, f"temp_conversion_{i}.pdf")
-                conversion_success = False
-                try:
-                    c = canvas.Canvas(temp_pdf_path, pagesize=A4)
-                    if ext in IMAGE_EXTENSIONS:
-                        self._add_image_to_pdf_canvas(file_path, c)
-                        conversion_success = True
-                    elif ext in TEXT_EXTENSIONS:
-                        self._add_text_file_to_pdf_canvas(file_path, c)
-                        conversion_success = True
-                    elif ext in RTF_EXTENSIONS:
-                        self._add_rtf_to_pdf_canvas(file_path, c)
-                        conversion_success = True
-                    elif ext in HTML_EXTENSIONS:
-                        # xhtml2pdf writes directly to file, doesn't use our canvas easily for multi-page merge
-                        # So, we convert HTML to a temp PDF, then merge that temp PDF.
-                        self._convert_html_to_pdf_file(file_path, temp_pdf_path) # Modified to take output path
-                        conversion_success = True # Assume success if no exception
-                    elif ext in SVG_EXTENSIONS:
-                        self._add_svg_to_pdf_canvas(file_path, c)
-                        conversion_success = True
-                    else: # Should not happen if filtered by ALL_SUPPORTED_EXT_PATTERNS_LIST
-                        print(f"Skipping unsupported file type during single PDF merge: {file_path}")
-                        skipped_files.append(os.path.basename(file_path))
-                        continue
-                    
-                    if conversion_success and not (ext in HTML_EXTENSIONS): # HTML is saved separately
-                         c.save()
-
-                    if os.path.exists(temp_pdf_path) and os.path.getsize(temp_pdf_path) > 0:
-                        merger.append(temp_pdf_path)
-                        processed_count += 1
-                    elif conversion_success : # File existed but was empty, or html conversion failed silently before.
-                         QMessageBox.warning(self, "Konvertierungsfehler", f"Erstellte PDF für {os.path.basename(file_path)} war leer oder fehlerhaft.")
-                         skipped_files.append(os.path.basename(file_path))
-
-                except UnidentifiedImageError:
-                    QMessageBox.critical(self, "Fehler", f"Bilddatei {os.path.basename(file_path)} nicht erkannt oder beschädigt.")
-                    skipped_files.append(os.path.basename(file_path))
-                except Exception as e:
-                    QMessageBox.critical(self, "Konvertierungsfehler", f"Fehler beim Konvertieren von {os.path.basename(file_path)}: {e}")
-                    skipped_files.append(os.path.basename(file_path))
-        
-        if processed_count > 0 and len(merger.pages) > 0:
-            try:
-                with open(output_filename, "wb") as output_f:
-                    merger.write(output_f)
-                QMessageBox.information(self, "Erfolg", f"{processed_count} Datei(en) erfolgreich in {os.path.basename(output_filename)} zusammengeführt.")
-                self.processing_status_label.setText(f"Erfolgreich gespeichert: {os.path.basename(output_filename)}")
-            except Exception as e:
-                QMessageBox.critical(self, "Speicherfehler", f"Fehler beim Speichern der PDF: {e}")
-                self.processing_status_label.setText("Fehler beim Speichern.")
-        else:
-            QMessageBox.warning(self, "Kein Ergebnis", "Keine Dateien konnten verarbeitet oder zusammengeführt werden.")
-            self.processing_status_label.setText("Keine Dateien verarbeitet.")
-
-        if skipped_files:
-            QMessageBox.warning(self, "Einige Dateien übersprungen", f"Folgende Dateien wurden übersprungen: {', '.join(skipped_files)}")
-
-    def _process_files_to_separate_pdfs(self, files_to_process): # Added files_to_process parameter
-        if not files_to_process: # Check the passed list
-            QMessageBox.warning(self, "Keine Dateien ausgewählt", "Keine Dateien für die separate Verarbeitung ausgewählt.") # More specific message
+        output_pdf_path, _ = QFileDialog.getSaveFileName(self, "Einzelne PDF speichern unter...",
+                                                         os.path.join(os.getcwd(), "kombinierte_datei.pdf"),
+                                                         "PDF-Dateien (*.pdf)")
+        if not output_pdf_path:
+            self.processing_status_label.setText("Speichervorgang abgebrochen.")
             return
 
-        output_dir = QFileDialog.getExistingDirectory(self, "Zielordner für separate PDFs auswählen")
-        if not output_dir:
-            self.processing_status_label.setText("Speichern abgebrochen.")
-            return
+        self.processing_status_label.setText("Verarbeite Dateien zu einer einzelnen PDF...")
+        QApplication.processEvents()
 
-        processed_count = 0
-        skipped_files = []
-        
-        for i, file_path in enumerate(files_to_process): # Use passed files_to_process
-            _, ext = os.path.splitext(file_path.lower())
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
-            # Suggest unique output name in case of conflicts (e.g. file.jpg and file.txt)
-            output_filename_suggestion = os.path.join(output_dir, f"{base_name}_{i}.pdf") 
-            
+        output_pdf_writer = PdfWriter()
+        num_successful = 0
+        num_errors = 0
+        first_error_detail = None # Added to capture first error detail
+
+        for i, file_path in enumerate(files_to_process):
+            current_file_basename = os.path.basename(file_path)
+            self.processing_status_label.setText(f"Verarbeite Datei {i+1}/{len(files_to_process)}: {current_file_basename}")
             QApplication.processEvents()
-            self.processing_status_label.setText(f"Verarbeite: {os.path.basename(file_path)}...")
-
-            # If file is already PDF, copy it instead of re-processing
-            if ext == ".pdf":
-                # We still need a save dialog for *each* PDF to allow renaming or skipping
-                # Or we decide on a naming convention and save automatically to output_dir
-                # For simplicity, let's try to copy with a slightly modified name to avoid overwrite confirmation for each.
-                # A better UX might be a dialog for each, or more complex overwrite handling.
-                try:
-                    # Check for encryption first
-                    reader_check = PdfReader(file_path)
-                    if reader_check.is_encrypted:
-                        try:
-                            if reader_check.decrypt('') != 1 and len(reader_check.pages) == 0:
-                                raise Exception("Failed to decrypt or no pages.")
-                        except Exception as e_decrypt:
-                            QMessageBox.warning(self, "Verschlüsselte PDF", f"PDF {os.path.basename(file_path)} ist verschlüsselt/unlesbar, wird übersprungen: {e_decrypt}")
-                            skipped_files.append(os.path.basename(file_path))
-                            continue
-                    
-                    # Suggest a name, but let user confirm/change it for each PDF file
-                    individual_output_filename, _ = QFileDialog.getSaveFileName(
-                        self,
-                        f"{os.path.basename(file_path)} speichern unter",
-                        os.path.join(output_dir, f"{base_name}.pdf"), # Simpler suggestion
-                        "PDF-Dateien (*.pdf)"
-                    )
-                    if not individual_output_filename:
-                        skipped_files.append(f"{os.path.basename(file_path)} (Speichern abgebrochen)")
-                        continue
-
-                    shutil.copy2(file_path, individual_output_filename)
-                    processed_count += 1
-                    self.processing_status_label.setText(f"{os.path.basename(file_path)} kopiert nach {os.path.basename(individual_output_filename)}.")
-
-                except Exception as e:
-                    QMessageBox.critical(self, "Fehler beim Kopieren", f"PDF {os.path.basename(file_path)} konnte nicht kopiert werden: {e}")
-                    skipped_files.append(os.path.basename(file_path))
-                continue # Next file
-
-            # --- Existing conversion logic for non-PDFs, saving each to its own output_filename ---
-            # Suggest a name, but let user confirm/change it
-            individual_output_filename, _ = QFileDialog.getSaveFileName(
-                self,
-                f"{os.path.basename(file_path)} als PDF speichern unter",
-                os.path.join(output_dir, f"{base_name}.pdf"),
-                "PDF-Dateien (*.pdf)"
-            )
-            if not individual_output_filename:
-                skipped_files.append(f"{os.path.basename(file_path)} (Speichern abgebrochen)")
-                continue
+            _, ext = os.path.splitext(file_path)
+            ext = ext.lower()
+            
+            temp_pdf_for_conversion = None
+            file_processed_successfully = False
 
             try:
-                c = canvas.Canvas(individual_output_filename, pagesize=A4)
-                conversion_done = False
-                if ext in IMAGE_EXTENSIONS:
-                    self._add_image_to_pdf_canvas(file_path, c)
-                    conversion_done = True
+                if ext == ".pdf":
+                    pdf_reader = PdfReader(file_path)
+                    for page in pdf_reader.pages:
+                        output_pdf_writer.add_page(page)
+                    self.processing_status_label.setText(f"PDF '{current_file_basename}' hinzugefügt.")
+                    file_processed_successfully = True
+                elif ext in IMAGE_EXTENSIONS:
+                    img_pdf_bytes = io.BytesIO()
+                    pdf_canvas = canvas.Canvas(img_pdf_bytes, pagesize=A4)
+                    if self._add_image_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        img_pdf_bytes.seek(0)
+                        img_pdf_reader = PdfReader(img_pdf_bytes)
+                        for page in img_pdf_reader.pages:
+                            output_pdf_writer.add_page(page)
+                        file_processed_successfully = True
+                    img_pdf_bytes.close()
                 elif ext in TEXT_EXTENSIONS:
-                    self._add_text_file_to_pdf_canvas(file_path, c)
-                    conversion_done = True
+                    txt_pdf_bytes = io.BytesIO()
+                    pdf_canvas = canvas.Canvas(txt_pdf_bytes, pagesize=A4)
+                    if self._add_text_file_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        txt_pdf_bytes.seek(0)
+                        txt_pdf_reader = PdfReader(txt_pdf_bytes)
+                        for page in txt_pdf_reader.pages:
+                            output_pdf_writer.add_page(page)
+                        file_processed_successfully = True
+                    txt_pdf_bytes.close()
                 elif ext in RTF_EXTENSIONS:
-                    self._add_rtf_to_pdf_canvas(file_path, c)
-                    conversion_done = True
+                    rtf_pdf_bytes = io.BytesIO()
+                    pdf_canvas = canvas.Canvas(rtf_pdf_bytes, pagesize=A4)
+                    if self._add_rtf_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        rtf_pdf_bytes.seek(0)
+                        rtf_pdf_reader = PdfReader(rtf_pdf_bytes)
+                        for page in rtf_pdf_reader.pages:
+                            output_pdf_writer.add_page(page)
+                        file_processed_successfully = True
+                    rtf_pdf_bytes.close()
                 elif ext in HTML_EXTENSIONS:
-                    self._convert_html_to_pdf_file(file_path, individual_output_filename)
-                    conversion_done = True # Assumes success if no exception
+                    temp_html_pdf_fd, temp_html_pdf_path = tempfile.mkstemp(suffix=".pdf")
+                    os.close(temp_html_pdf_fd)
+                    temp_pdf_for_conversion = temp_html_pdf_path
+                    if self._convert_html_to_pdf_file(file_path, temp_html_pdf_path):
+                        html_pdf_reader = PdfReader(temp_html_pdf_path)
+                        for page in html_pdf_reader.pages:
+                            output_pdf_writer.add_page(page)
+                        file_processed_successfully = True
                 elif ext in SVG_EXTENSIONS:
-                    self._add_svg_to_pdf_canvas(file_path, c)
-                    conversion_done = True
-                else: # Should not be reached if filtered
-                    skipped_files.append(os.path.basename(file_path) + " (unbekannter Typ)")
-                    continue
-                
-                if conversion_done and not (ext in HTML_EXTENSIONS): # HTML saved by its own function
-                    c.save()
-                
-                if os.path.exists(individual_output_filename) and os.path.getsize(individual_output_filename) > 0:
-                    processed_count += 1
-                else: # Conversion might have failed silently or produced empty file
-                    QMessageBox.warning(self, "Konvertierungsfehler", f"Erstellte PDF für {os.path.basename(file_path)} war leer oder fehlerhaft.")
-                    skipped_files.append(os.path.basename(file_path))
+                    svg_pdf_bytes = io.BytesIO()
+                    pdf_canvas = canvas.Canvas(svg_pdf_bytes, pagesize=A4)
+                    if self._add_svg_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        svg_pdf_bytes.seek(0)
+                        svg_pdf_reader = PdfReader(svg_pdf_bytes)
+                        for page in svg_pdf_reader.pages:
+                             output_pdf_writer.add_page(page)
+                        file_processed_successfully = True
+                    svg_pdf_bytes.close()
+                elif ext in (MS_WORD_EXTENSIONS + MS_EXCEL_EXTENSIONS + MS_POWERPOINT_EXTENSIONS +
+                             ODF_TEXT_EXTENSIONS + ODF_SPREADSHEET_EXTENSIONS + ODF_PRESENTATION_EXTENSIONS):
+                    temp_office_pdf_fd, temp_office_pdf_path = tempfile.mkstemp(suffix=".pdf")
+                    os.close(temp_office_pdf_fd)
+                    temp_pdf_for_conversion = temp_office_pdf_path
+                    self.processing_status_label.setText(f"Konvertiere {current_file_basename} zu PDF...")
+                    QApplication.processEvents()
+                    if self._convert_office_to_pdf_native(file_path, temp_office_pdf_path):
+                        if os.path.exists(temp_office_pdf_path) and os.path.getsize(temp_office_pdf_path) > 0:
+                            try:
+                                office_pdf_reader = PdfReader(temp_office_pdf_path)
+                                for page in office_pdf_reader.pages:
+                                    output_pdf_writer.add_page(page)
+                                self.processing_status_label.setText(f"{current_file_basename} zu PDF hinzugefügt.")
+                                file_processed_successfully = True
+                            except Exception as e:
+                                error_msg = f"Fehler beim Lesen der konvertierten PDF für {current_file_basename}: {e}"
+                                self.processing_status_label.setText(error_msg)
+                                print(f"Error reading converted PDF {temp_office_pdf_path}: {e}")
+                        else:
+                             self.processing_status_label.setText(f"Konvertierte PDF für {current_file_basename} ist leer oder nicht vorhanden.")
+                    # If _convert_office_to_pdf_native returned False, status label is already set by it.
+                else:
+                    self.processing_status_label.setText(f"Dateityp {ext} von '{current_file_basename}' wird nicht unterstützt.")
 
+                if file_processed_successfully:
+                    num_successful += 1
+                else:
+                    num_errors += 1
+                    error_on_label = self.processing_status_label.text() # Get status after failed attempt
+                    if not first_error_detail:
+                        first_error_detail = f"Datei '{current_file_basename}': {error_on_label}"
 
-            except UnidentifiedImageError:
-                QMessageBox.critical(self, "Fehler", f"Bilddatei {os.path.basename(file_path)} nicht erkannt oder beschädigt.")
-                skipped_files.append(os.path.basename(file_path))
             except Exception as e:
-                QMessageBox.critical(self, "Fehler", f"Fehler beim Konvertieren von {os.path.basename(file_path)} zu PDF: {e}")
-                skipped_files.append(os.path.basename(file_path))
+                error_msg = f"Fehler bei Datei '{current_file_basename}': {e}"
+                self.processing_status_label.setText(error_msg)
+                print(f"Error processing file {file_path}: {e}")
+                num_errors += 1
+                if not first_error_detail:
+                    first_error_detail = error_msg # Use the exception message directly
+            finally:
+                if temp_pdf_for_conversion and os.path.exists(temp_pdf_for_conversion):
+                    try:
+                        os.remove(temp_pdf_for_conversion)
+                    except Exception as e_del:
+                        print(f"Could not delete temp file {temp_pdf_for_conversion}: {e_del}")
 
-        if processed_count > 0:
-            QMessageBox.information(self, "Erfolg", f"{processed_count} Datei(en) erfolgreich als separate PDFs gespeichert im Ordner: {output_dir}")
-            self.processing_status_label.setText(f"{processed_count} Dateien separat gespeichert.")
+        if len(output_pdf_writer.pages) > 0:
+            try:
+                with open(output_pdf_path, "wb") as f_out:
+                    output_pdf_writer.write(f_out)
+                final_message = f"Erfolgreich {num_successful} Datei(en) in '{os.path.basename(output_pdf_path)}' gespeichert."
+                if num_errors > 0:
+                    final_message += f" {num_errors} Datei(en) konnten nicht verarbeitet werden."
+                if first_error_detail:
+                    final_message += f"\n\nDetails zum ersten Fehler:\n{first_error_detail}"
+                
+                if num_errors > 0:
+                    # Show detailed error information
+                    detailed_info = f"Erfolgreich verarbeitet: {num_successful}\nFehler: {num_errors}\n\n"
+                    detailed_info += f"Erster Fehler:\n{first_error_detail}\n\n"
+                    detailed_info += self._get_conversion_capability_info()
+                    
+                    msg_box = QMessageBox(self)
+                    msg_box.setIcon(QMessageBox.Icon.Information)
+                    msg_box.setWindowTitle("Verarbeitung teilweise erfolgreich")
+                    msg_box.setText(final_message)
+                    msg_box.setDetailedText(detailed_info)
+                    msg_box.exec()
+                else:
+                    QMessageBox.information(self, "Verarbeitung abgeschlossen", final_message)
+            except Exception as e:
+                error_detail = f"Fehler beim Speichern der PDF: {e}\n\n"
+                error_detail += f"Ausgabepfad: {output_pdf_path}\n"
+                error_detail += f"Dateigröße der nicht gespeicherten PDF: {len(output_pdf_writer.pages)} Seiten"
+                self._show_detailed_error("Speicherfehler", f"Fehler beim Speichern der PDF: {e}", error_detail)
+        elif num_errors > 0 and num_successful == 0:
+            final_message = f"Keine Dateien konnten verarbeitet werden. {num_errors} Fehler aufgetreten."
+            if first_error_detail:
+                final_message += f"\n\nDetails zum ersten Fehler:\n{first_error_detail}"
+            
+            detailed_info = f"Alle {num_errors} Dateien konnten nicht verarbeitet werden.\n\n"
+            detailed_info += f"Erster Fehler:\n{first_error_detail}\n\n"
+            detailed_info += self._get_conversion_capability_info()
+            
+            self._show_detailed_error("Verarbeitung fehlgeschlagen", final_message, detailed_info)
         else:
-            QMessageBox.warning(self, "Kein Ergebnis", "Keine Dateien konnten verarbeitet werden.")
-            self.processing_status_label.setText("Keine Dateien verarbeitet.")
+            QMessageBox.information(self, "Nichts zu speichern", "Keine Inhalte zum Speichern in der PDF vorhanden.")
         
-        if skipped_files:
-            QMessageBox.warning(self, "Einige Dateien übersprungen", f"Folgende Dateien wurden übersprungen oder nicht gespeichert: {', '.join(skipped_files)}")
+        self.processing_status_label.setText("Bereit.")
+
+    def _process_files_to_separate_pdfs(self, files_to_process):
+        if not files_to_process:
+            self.processing_status_label.setText("Keine Dateien zum Verarbeiten ausgewählt.")
+            return
+
+        output_folder = QFileDialog.getExistingDirectory(self, "Zielordner für separate PDFs auswählen", os.getcwd())
+        if not output_folder:
+            self.processing_status_label.setText("Speichervorgang abgebrochen.")
+            return
+
+        self.processing_status_label.setText("Verarbeite Dateien zu separaten PDFs...")
+        QApplication.processEvents()
+
+        num_successful = 0
+        num_errors = 0
+        processed_file_paths = []
+        first_error_detail = None # Added to capture first error detail
+
+        for i, file_path in enumerate(files_to_process):
+            current_file_basename = os.path.basename(file_path)
+            self.processing_status_label.setText(f"Verarbeite Datei {i+1}/{len(files_to_process)}: {current_file_basename}")
+            QApplication.processEvents()
+            
+            base, ext = os.path.splitext(current_file_basename)
+            ext = ext.lower()
+            output_pdf_name = f"{base}.pdf"
+            final_output_pdf_path = os.path.join(output_folder, output_pdf_name)
+            
+            conversion_successful_flag = False
+
+            try:
+                if ext == ".pdf":
+                    shutil.copy2(file_path, final_output_pdf_path)
+                    self.processing_status_label.setText(f"PDF '{current_file_basename}' kopiert.")
+                    conversion_successful_flag = True
+                elif ext in IMAGE_EXTENSIONS:
+                    pdf_canvas = canvas.Canvas(final_output_pdf_path, pagesize=A4)
+                    if self._add_image_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        conversion_successful_flag = True
+                elif ext in TEXT_EXTENSIONS:
+                    pdf_canvas = canvas.Canvas(final_output_pdf_path, pagesize=A4)
+                    if self._add_text_file_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        conversion_successful_flag = True
+                elif ext in RTF_EXTENSIONS:
+                    pdf_canvas = canvas.Canvas(final_output_pdf_path, pagesize=A4)
+                    if self._add_rtf_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        conversion_successful_flag = True
+                elif ext in HTML_EXTENSIONS:
+                    if self._convert_html_to_pdf_file(file_path, final_output_pdf_path):
+                        conversion_successful_flag = True
+                elif ext in SVG_EXTENSIONS:
+                    pdf_canvas = canvas.Canvas(final_output_pdf_path, pagesize=A4)
+                    if self._add_svg_to_pdf_canvas(file_path, pdf_canvas):
+                        pdf_canvas.save()
+                        conversion_successful_flag = True
+                elif ext in (MS_WORD_EXTENSIONS + MS_EXCEL_EXTENSIONS + MS_POWERPOINT_EXTENSIONS +
+                             ODF_TEXT_EXTENSIONS + ODF_SPREADSHEET_EXTENSIONS + ODF_PRESENTATION_EXTENSIONS):
+                    self.processing_status_label.setText(f"Konvertiere {current_file_basename} zu PDF...")
+                    QApplication.processEvents()
+                    if self._convert_office_to_pdf_native(file_path, final_output_pdf_path):
+                        if os.path.exists(final_output_pdf_path) and os.path.getsize(final_output_pdf_path) > 0:
+                             self.processing_status_label.setText(f"{current_file_basename} erfolgreich als PDF gespeichert.")
+                             conversion_successful_flag = True
+                        else:
+                            self.processing_status_label.setText(f"Konvertierte PDF für {current_file_basename} ist leer oder nicht vorhanden (separat).")
+                    # If _convert_office_to_pdf_native returned False, status label is already set by it.
+                else:
+                    self.processing_status_label.setText(f"Dateityp {ext} von '{current_file_basename}' wird nicht unterstützt.")
+
+                if conversion_successful_flag:
+                    num_successful += 1
+                    processed_file_paths.append(final_output_pdf_path)
+                else:
+                    num_errors += 1
+                    error_on_label = self.processing_status_label.text() # Get status after failed attempt
+                    if not first_error_detail:
+                         # Avoid capturing generic "Processing file X/Y..." if a more specific error wasn't set by a sub-function
+                        if not error_on_label.startswith("Verarbeite Datei") and "erfolgreich" not in error_on_label.lower():
+                            first_error_detail = f"Datei '{current_file_basename}': {error_on_label}"
+                        elif error_on_label.startswith("Verarbeite Datei") : # Fallback if no other specific error was set on label
+                             first_error_detail = f"Datei '{current_file_basename}': Konnte nicht verarbeitet werden (keine spezifische Fehlermeldung)."
+
+            except Exception as e:
+                error_msg = f"Fehler bei Datei '{current_file_basename}': {e}"
+                self.processing_status_label.setText(error_msg)
+                print(f"Error processing file {file_path} for separate PDF: {e}")
+                num_errors += 1
+                if not first_error_detail:
+                    first_error_detail = error_msg # Use the exception message directly
+                if os.path.exists(final_output_pdf_path) and not conversion_successful_flag:
+                    try:
+                        os.remove(final_output_pdf_path)
+                    except Exception as e_del:
+                        print(f"Could not delete partial PDF {final_output_pdf_path}: {e_del}")
+        
+        final_message = f"Verarbeitung abgeschlossen. {num_successful} Datei(en) erfolgreich als separate PDFs gespeichert."
+        if num_errors > 0:
+            final_message += f" {num_errors} Datei(en) konnten nicht verarbeitet werden."
+        if first_error_detail:
+             final_message += f"\n\nDetails zum ersten Fehler:\n{first_error_detail}"
+        
+        reply = QMessageBox.information(self, "Verarbeitung abgeschlossen", 
+                                        final_message + "\\n\\nMöchten Sie den Ausgabeordner öffnen?",
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                                        QMessageBox.StandardButton.Yes)
+        if reply == QMessageBox.StandardButton.Yes and os.path.exists(output_folder):
+            try:
+                # Use os.startfile on Windows, and 'open' on macOS, 'xdg-open' on Linux
+                if platform.system() == "Windows":
+                    os.startfile(output_folder)
+                elif platform.system() == "Darwin": # macOS
+                    subprocess.run(["open", output_folder])
+                else: # Linux and other Unix-like
+                    subprocess.run(["xdg-open", output_folder])
+            except Exception as e:
+                QMessageBox.warning(self, "Ordner öffnen Fehler", f"Der Ordner '{output_folder}' konnte nicht geöffnet werden.\\nFehler: {e}")
+
+        self.processing_status_label.setText("Bereit.")
 
     # --- Conversion Helper Methods (largely unchanged from ConvertTab, ensure they use 'canvas' (c) correctly) ---
     # Make sure _convert_html_to_pdf_file is defined or adapt usage
@@ -611,6 +761,12 @@ class FileProcessingTab(QWidget): # Renamed class
                 pisa_status = pisa.CreatePDF(source_html, dest=result_file)
             if pisa_status.err:
                 raise Exception(f"pisa error: {pisa_status.err}")
+            
+            # Check if the output file was actually created and has content
+            if not os.path.exists(output_pdf_path) or os.path.getsize(output_pdf_path) == 0:
+                raise Exception("PDF-Datei wurde nicht erstellt oder ist leer")
+                
+            return True  # Indicate successful HTML conversion
         except Exception as e:
             print(f"Error converting HTML {html_file_path} to PDF: {e}")
             # Propagate error to be caught by caller
@@ -663,8 +819,10 @@ class FileProcessingTab(QWidget): # Renamed class
 
             # pdf_canvas.showPage() # showPage is called by the loop for GIFs, or once after all content for single PDF.
             # For separate PDFs, c.save() is called after this. For single PDF, this adds to current page of temp_pdf.
-        except UnidentifiedImageError:
-            raise # Re-raise to be caught by caller
+            return True  # Indicate successful image processing
+        except UnidentifiedImageError as e:
+            print(f"Error processing image {image_path}: Unidentified image format - {e}")
+            raise Exception(f"Unbekanntes Bildformat für {os.path.basename(image_path)}: {e}")
         except Exception as e:
             print(f"Error processing image {image_path}: {e}")
             raise Exception(f"Fehler bei Bildverarbeitung {os.path.basename(image_path)}: {e}")
@@ -742,7 +900,9 @@ class FileProcessingTab(QWidget): # Renamed class
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
             self._render_text_to_pdf_canvas(content, pdf_canvas, source_filename=os.path.basename(file_path))
+            return True  # Indicate successful text processing
         except Exception as e:
+            print(f"Error processing text file {file_path}: {e}")
             raise Exception(f"Fehler beim Lesen/Rendern der Textdatei {os.path.basename(file_path)}: {e}")
 
     def _add_rtf_to_pdf_canvas(self, file_path, pdf_canvas):
@@ -751,7 +911,9 @@ class FileProcessingTab(QWidget): # Renamed class
                 rtf_content = f.read()
             text_content = rtf_to_text(rtf_content)
             self._render_text_to_pdf_canvas(text_content, pdf_canvas, source_filename=os.path.basename(file_path))
+            return True  # Indicate successful RTF processing
         except Exception as e:
+            print(f"Error processing RTF file {file_path}: {e}")
             raise Exception(f"Fehler beim Verarbeiten der RTF-Datei {os.path.basename(file_path)}: {e}")
 
     def _add_svg_to_pdf_canvas(self, file_path, pdf_canvas):
@@ -759,71 +921,384 @@ class FileProcessingTab(QWidget): # Renamed class
         try:
             drawing = svg2rlg(file_path)
             if drawing:
-                # Scale drawing to fit A4 if too large, maintaining aspect ratio
-                a4_width, a4_height = A4
-                
-                # ReportLab drawing objects might not have a straightforward width/height like images
-                # We might need to render it and see, or use its properties if available
-                # For simplicity, let's assume it tries to render at its native size first
-                # and rely on ReportLab's canvas clipping or try a scale if we can get bounds.
-                # This part can be complex depending on SVG content and svglib behavior.
-                
-                # A simple approach: render at 0,0 and let it take space.
-                # For better control, one would inspect drawing.width, drawing.height
-                # and apply scaling similar to images.
-                # drawing.scale(scale_factor, scale_factor)
-                # drawing.translate(x_offset, y_offset)
-                
-                # Example: attempt to scale if drawing object has width/height attributes
-                render_width = drawing.width if hasattr(drawing, 'width') else a4_width
-                render_height = drawing.height if hasattr(drawing, 'height') else a4_height
+                # Scale drawing to fit the page if it's too large, maintaining aspect ratio
+                page_width, page_height = pdf_canvas._pagesize
+                available_width = page_width - 2 * inch # Assuming 1 inch margins
+                available_height = page_height - 2 * inch
 
-                if render_width == 0 or render_height == 0 : # Cant get size, dont scale
-                     scale_x, scale_y = 1.0, 1.0
-                else:
-                    scale_x = a4_width / render_width
-                    scale_y = a4_height / render_height
+                if drawing.width > available_width or drawing.height > available_height:
+                    scale_w = available_width / drawing.width if drawing.width else 1
+                    scale_h = available_height / drawing.height if drawing.height else 1
+                    scale = min(scale_w, scale_h)
+                    drawing.width *= scale
+                    drawing.height *= scale
+                    drawing.scale(scale, scale)
                 
-                scale_factor = min(scale_x, scale_y, 1.0) # Don't upscale beyond 1.0 unless small
-
-                original_drawing_width = drawing.width if hasattr(drawing, 'width') else 0
-                original_drawing_height = drawing.height if hasattr(drawing, 'height') else 0
-                
-                scaled_width = original_drawing_width * scale_factor
-                scaled_height = original_drawing_height * scale_factor
-                
-                x_offset = (a4_width - scaled_width) / 2
-                y_offset = (a4_height - scaled_height) - inch # Position towards bottom for typical full page
-                if y_offset < inch : y_offset = inch
-
-
-                # Apply transformations for scaling and positioning
-                # ReportLab's renderPDF.draw can take a drawing and a canvas.
-                # It's often better to add the drawing to a Flowable list for complex docs,
-                # but for single page on canvas:
-                from reportlab.graphics import renderPDF
-                
-                # Need to handle the drawing object carefully.
-                # Create a temporary canvas frame for the drawing might be safer.
-                # For now, let's assume drawing.drawOn(pdf_canvas, x, y) works after scaling
-                
-                # Store original transform
-                original_transform = drawing.transform
-                
-                drawing.scale(scale_factor, scale_factor)
                 # Center the drawing on the page
-                # The drawing's own (0,0) will be placed at x_offset, y_offset on the canvas.
-                drawing.translate(x_offset / scale_factor, y_offset / scale_factor) # Adjust translation by scale factor
-
-                renderPDF.draw(drawing, pdf_canvas, 0, 0) # Draw at canvas origin after transform
-
-                # Restore original transform if needed elsewhere, though drawing is usually local here
-                drawing.transform = original_transform
-
+                x_offset = (page_width - drawing.width) / 2
+                y_offset = (page_height - drawing.height) / 2
+                
+                drawing.drawOn(pdf_canvas, x_offset, y_offset)
+                pdf_canvas.showPage()
+                self.processing_status_label.setText(f"SVG '{os.path.basename(file_path)}' zu PDF hinzugefügt.")
+                return True # Indicate success
             else:
-                raise Exception("SVG konnte nicht geladen werden.")
+                self.processing_status_label.setText(f"Fehler beim Parsen von SVG '{os.path.basename(file_path)}'.")
         except Exception as e:
-            raise Exception(f"Fehler beim Verarbeiten der SVG-Datei {os.path.basename(file_path)}: {e}")
+            self.processing_status_label.setText(f"Fehler beim Konvertieren von SVG '{os.path.basename(file_path)}': {e}")
+        return False # Indicate failure
+
+    def _is_msoffice_app_available(self, app_name):
+        if os.name != 'nt' or not win32com or not pythoncom:
+            print(f"MSOffice check for {app_name}: Early exit (not Windows or win32com/pythoncom not imported).")
+            return False
+        
+        com_initialized_here = False
+        try:
+            # Try to initialize COM for this check. If it's already initialized on this thread,
+            # CoInitialize will return S_FALSE, which is not an error.
+            # If it returns S_OK, then we must call CoUninitialize.
+            # If it raises an error, we can't proceed.
+            hr = pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED) # Or COINIT_MULTITHREADED
+            # S_OK = 0, S_FALSE = 1. Both mean success in terms of usability.
+            if hr == 0 or hr == 1:
+                 com_initialized_here = True
+
+            win32com.client.Dispatch(app_name)
+            # print(f"MSOffice check for {app_name}: Dispatch successful.") # Optional: for verbose success logging
+            return True
+        except pythoncom.com_error as e:
+            print(f"MSOffice check for {app_name}: COM Error during Dispatch: {e}")
+            # This often means the application isn't installed, not registered for COM, or a permissions issue.
+            return False
+        except Exception as e:
+            # Catches other potential errors, e.g., if pythoncom itself is None or Dispatch fails for non-COM reasons.
+            print(f"MSOffice check for {app_name}: General error during Dispatch: {e}")
+            return False
+        finally:
+            if com_initialized_here and pythoncom:
+                try:
+                    pythoncom.CoUninitialize()
+                except pythoncom.com_error as e_uninit:
+                    # This can happen if CoInitialize wasn't actually the first call on the thread, 
+                    # or if an error occurred that left COM in an unstable state.
+                    print(f"MSOffice check for {app_name}: COM Error during CoUninitialize: {e_uninit}")
+                except Exception as e_uninit_general:
+                    print(f"MSOffice check for {app_name}: General error during CoUninitialize: {e_uninit_general}")
+
+    def _find_libreoffice_soffice(self):
+        if shutil.which("soffice"): # Check PATH first
+            return shutil.which("soffice")
+
+        system = platform.system()
+        possible_paths = []
+        if system == "Windows":
+            program_files = os.environ.get("ProgramFiles", "C:\\Program Files")
+            program_files_x86 = os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+            possible_paths = [
+                os.path.join(program_files, "LibreOffice", "program", "soffice.exe"),
+                os.path.join(program_files_x86, "LibreOffice", "program", "soffice.exe"),
+            ]
+        elif system == "Linux":
+            possible_paths = [
+                "/usr/bin/soffice",
+                "/usr/local/bin/soffice",
+                "/opt/libreoffice/program/soffice", # Common for manual installs
+                # Snap path could be /snap/bin/libreoffice.soffice but might be harder to detect reliably
+            ]
+        elif system == "Darwin": # macOS
+            possible_paths = [
+                "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+            ]
+
+        for path in possible_paths:
+            if os.path.exists(path) and os.access(path, os.X_OK):
+                return path
+        return None
+
+    def _convert_office_to_pdf_native(self, input_path, output_pdf_path):
+        """
+        Converts an office document to PDF.
+        Tries MS Office first if available (Windows only), then falls back to LibreOffice.
+        output_pdf_path is the full desired path for the output PDF.
+        Returns True on success, False on failure.
+        """
+        _, ext = os.path.splitext(input_path)
+        ext = ext.lower()
+        input_basename = os.path.basename(input_path)
+        
+        # Log the conversion attempt
+        print(f"Starting conversion of {input_basename} ({ext}) to PDF")
+        
+        # COM Initialization for MS Office operations
+        com_initialized = False
+        if os.name == 'nt' and pythoncom:
+            try:
+                pythoncom.CoInitialize()
+                com_initialized = True
+                print(f"COM initialized successfully for {input_basename}")
+            except Exception as e:
+                print(f"Failed to CoInitialize: {e}. Trying CoInitializeEx.")
+                try:
+                    pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)
+                    com_initialized = True
+                    print(f"COM initialized with CoInitializeEx for {input_basename}")
+                except Exception as e2:
+                    print(f"Failed to CoInitializeEx: {e2}")
+                    self.processing_status_label.setText(f"COM Initialization failed for {input_basename}: {e2}")
+                    # Proceed without COM, relying on LibreOffice or if converters don't need explicit init
+        
+        try:
+            # 1. MS Word (.doc, .docx)
+            if ext in MS_WORD_EXTENSIONS:
+                if self.msword_available and convert_docx_to_pdf and win32com: # win32com check for safety
+                    self.processing_status_label.setText(f"Versuche {input_basename} mit MS Word zu konvertieren...")
+                    QApplication.processEvents()
+                    try:
+                        print(f"Attempting MS Word conversion: {input_path} -> {output_pdf_path}")
+                        convert_docx_to_pdf(os.path.abspath(input_path), os.path.abspath(output_pdf_path))
+                        if os.path.exists(output_pdf_path) and os.path.getsize(output_pdf_path) > 0:
+                            self.processing_status_label.setText(f"{input_basename} erfolgreich mit MS Word konvertiert.")
+                            print(f"MS Word conversion successful for {input_basename}")
+                            return True
+                        else:
+                            error_msg = f"MS Word Konvertierung von {input_basename} fehlgeschlagen (Datei nicht erstellt oder leer)."
+                            self.processing_status_label.setText(error_msg)
+                            print(f"MS Word conversion failed: {error_msg}")
+                    except Exception as e:
+                        error_msg = f"MS Word Konvertierungsfehler für {input_basename}: {e}"
+                        self.processing_status_label.setText(error_msg)
+                        print(f"MS Word conversion error for {input_path}: {e}")
+                    # Fall through to LibreOffice if MS Word conversion fails
+                else:
+                    print(f"MS Word not available for {input_basename}. MSWord available: {self.msword_available}, convert_docx_to_pdf: {convert_docx_to_pdf is not None}, win32com: {win32com is not None}")
+
+            # 2. MS PowerPoint (.ppt, .pptx)
+            elif ext in MS_POWERPOINT_EXTENSIONS:
+                if self.mspowerpoint_available and pptxtopdf_convert_bulk and win32com:
+                    self.processing_status_label.setText(f"Versuche {input_basename} mit MS PowerPoint zu konvertieren...")
+                    QApplication.processEvents()
+                    temp_dir_powerpoint = tempfile.TemporaryDirectory()
+                    try:
+                        print(f"Attempting MS PowerPoint conversion: {input_path} -> temp dir: {temp_dir_powerpoint.name}")
+                        # pptxtopdf_convert_bulk saves to output_dir with original name + .pdf
+                        pptxtopdf_convert_bulk(os.path.abspath(input_path), temp_dir_powerpoint.name)
+                        
+                        original_basename_no_ext = os.path.splitext(input_basename)[0]
+                        converted_pdf_in_temp = os.path.join(temp_dir_powerpoint.name, original_basename_no_ext + ".pdf")
+
+                        if os.path.exists(converted_pdf_in_temp) and os.path.getsize(converted_pdf_in_temp) > 0:
+                            shutil.move(converted_pdf_in_temp, os.path.abspath(output_pdf_path))
+                            self.processing_status_label.setText(f"{input_basename} erfolgreich mit MS PowerPoint konvertiert.")
+                            print(f"MS PowerPoint conversion successful for {input_basename}")
+                            return True
+                        else:
+                            error_msg = f"MS PowerPoint Konvertierung fehlgeschlagen für {input_basename} (Datei nicht erstellt oder leer)."
+                            self.processing_status_label.setText(error_msg)
+                            print(f"MS PowerPoint conversion failed: {error_msg}")
+                    except Exception as e:
+                        error_msg = f"MS PowerPoint Konvertierungsfehler für {input_basename}: {e}"
+                        self.processing_status_label.setText(error_msg)
+                        print(f"MS PowerPoint conversion error for {input_path}: {e}")
+                    finally:
+                        temp_dir_powerpoint.cleanup()
+                    # Fall through to LibreOffice
+                else:
+                    print(f"MS PowerPoint not available for {input_basename}. MSPowerPoint available: {self.mspowerpoint_available}, pptxtopdf_convert_bulk: {pptxtopdf_convert_bulk is not None}, win32com: {win32com is not None}")
+
+            # 3. MS Excel (.xls, .xlsx)
+            elif ext in MS_EXCEL_EXTENSIONS:
+                if self.msexcel_available and win32com:
+                    self.processing_status_label.setText(f"Versuche {input_basename} mit MS Excel zu konvertieren...")
+                    QApplication.processEvents()
+                    excel_app = None
+                    try:
+                        print(f"Attempting MS Excel conversion: {input_path} -> {output_pdf_path}")
+                        excel_app = win32com.client.Dispatch("Excel.Application")
+                        excel_app.Visible = False # Run in background
+                        workbook = excel_app.Workbooks.Open(os.path.abspath(input_path))
+                        # Type 0 is for PDF format
+                        workbook.ExportAsFixedFormat(0, os.path.abspath(output_pdf_path))
+                        workbook.Close(SaveChanges=False)
+                        
+                        if os.path.exists(output_pdf_path) and os.path.getsize(output_pdf_path) > 0:
+                            self.processing_status_label.setText(f"{input_basename} erfolgreich mit MS Excel konvertiert.")
+                            print(f"MS Excel conversion successful for {input_basename}")
+                            return True
+                        else:
+                            error_msg = f"MS Excel Konvertierung fehlgeschlagen für {input_basename} (Datei nicht erstellt oder leer)."
+                            self.processing_status_label.setText(error_msg)
+                            print(f"MS Excel conversion failed: {error_msg}") 
+                    except Exception as e:
+                        error_msg = f"MS Excel Konvertierungsfehler für {input_basename}: {e}"
+                        self.processing_status_label.setText(error_msg)
+                        print(f"MS Excel conversion error for {input_path}: {e}")
+                    finally:
+                        if excel_app:
+                            try:
+                                excel_app.Quit()
+                            except:
+                                pass
+                        # Ensure excel process is not lingering, though Quit should handle it.
+                        # Further process killing could be added here if necessary.
+                    # Fall through to LibreOffice
+                else:
+                    print(f"MS Excel not available for {input_basename}. MSExcel available: {self.msexcel_available}, win32com: {win32com is not None}")
+
+            # 4. LibreOffice (ODF formats and fallback for MS Office)
+            if self.soffice_path:
+                self.processing_status_label.setText(f"Versuche {input_basename} mit LibreOffice zu konvertieren...")
+                QApplication.processEvents()
+                print(f"Attempting LibreOffice conversion using: {self.soffice_path}")
+                # LibreOffice --convert-to pdf saves the file in --outdir with the original name + .pdf
+                # So we use a temporary output directory and then move the file.
+                temp_dir_libreoffice = tempfile.TemporaryDirectory()
+                try:
+                    cmd = [
+                        self.soffice_path,
+                        "--headless",       # Run in background
+                        "--convert-to", "pdf",
+                        "--outdir", temp_dir_libreoffice.name,
+                        os.path.abspath(input_path)
+                    ]
+                    print(f"LibreOffice command: {' '.join(cmd)}")
+                    # Increased timeout for potentially large files
+                    process = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120) 
+                    
+                    original_basename_no_ext = os.path.splitext(input_basename)[0]
+                    converted_pdf_in_temp = os.path.join(temp_dir_libreoffice.name, original_basename_no_ext + ".pdf")
+                    print(f"Looking for converted file at: {converted_pdf_in_temp}")
+
+                    if os.path.exists(converted_pdf_in_temp) and os.path.getsize(converted_pdf_in_temp) > 0:
+                        shutil.move(converted_pdf_in_temp, os.path.abspath(output_pdf_path))
+                        self.processing_status_label.setText(f"{input_basename} erfolgreich mit LibreOffice konvertiert.")
+                        print(f"LibreOffice conversion successful for {input_basename}")
+                        return True
+                    else:
+                        err_msg = process.stderr if process.stderr else "Unbekannter Fehler (Zieldatei nicht gefunden oder leer)."
+                        error_detail = f"LibreOffice Konvertierung von {input_basename} fehlgeschlagen: {err_msg}"
+                        self.processing_status_label.setText(error_detail)
+                        print(f"LibreOffice conversion failed for {input_path}. stderr: {process.stderr}, stdout: {process.stdout}")
+                        print(f"Files in temp directory: {os.listdir(temp_dir_libreoffice.name) if os.path.exists(temp_dir_libreoffice.name) else 'Directory not found'}")
+                        
+                except subprocess.CalledProcessError as e:
+                    error_detail = f"LibreOffice Prozessfehler bei {input_basename}: {e.stderr if e.stderr else 'Unbekannter Fehler'}"
+                    self.processing_status_label.setText(error_detail)
+                    print(f"LibreOffice CalledProcessError for {input_path}: stderr: {e.stderr}, stdout: {e.stdout}, returncode: {e.returncode}")
+                except subprocess.TimeoutExpired:
+                    error_detail = f"LibreOffice Konvertierung von {input_basename} Zeitüberschreitung (>120s)."
+                    self.processing_status_label.setText(error_detail)
+                    print(f"LibreOffice TimeoutExpired for {input_path}")
+                except Exception as e:
+                    error_detail = f"Allgemeiner LibreOffice Fehler bei {input_basename}: {e}"
+                    self.processing_status_label.setText(error_detail)
+                    print(f"LibreOffice general error for {input_path}: {e}")
+                finally:
+                    temp_dir_libreoffice.cleanup()
+            else: # No soffice_path
+                if ext in MS_WORD_EXTENSIONS or ext in MS_EXCEL_EXTENSIONS or ext in MS_POWERPOINT_EXTENSIONS:
+                    # This message is shown if MS Office conversion was not available or failed, and LibreOffice is also not found.
+                    error_detail = f"Kein MS Office oder LibreOffice für {input_basename} gefunden. Installieren Sie LibreOffice oder MS Office."
+                    self.processing_status_label.setText(error_detail)
+                    print(f"No converters available for MS Office file: {input_basename}")
+                elif ext in ODF_TEXT_EXTENSIONS or ext in ODF_SPREADSHEET_EXTENSIONS or ext in ODF_PRESENTATION_EXTENSIONS:
+                    error_detail = f"LibreOffice nicht gefunden für ODF-Datei {input_basename}. Installieren Sie LibreOffice."
+                    self.processing_status_label.setText(error_detail)
+                    print(f"LibreOffice not found for ODF file: {input_basename}")
+                # If it's not an office file type this function shouldn't have been called.
+                # However, if it was, this is a generic message.
+                else:
+                    error_detail = f"Kein geeigneter Konverter für {input_basename} gefunden."
+                    self.processing_status_label.setText(error_detail)
+                    print(f"No suitable converter found for file: {input_basename}")
+
+            # If we reach here, all conversion attempts failed
+            final_error = f"Konvertierung von {input_basename} fehlgeschlagen. Überprüfen Sie die Installation von MS Office/LibreOffice."
+            self.processing_status_label.setText(final_error)
+            print(f"All conversion attempts failed for: {input_basename}")
+            return False
+
+        finally:
+            if com_initialized and pythoncom:
+                try:
+                    pythoncom.CoUninitialize()
+                    print(f"COM uninitialized for {input_basename}")
+                except Exception as e:
+                    print(f"Error during CoUninitialize: {e}") # Log if CoUninitialize fails
+                    pass
+
+    def _log_dependency_status(self):
+        """Log the status of all conversion dependencies."""
+        print("=== PDF Tool Dependency Status ===")
+        print(f"LibreOffice soffice path: {self.soffice_path if self.soffice_path else 'NICHT GEFUNDEN'}")
+        print(f"MS Word available: {'✓' if self.msword_available else '✗'}")
+        print(f"MS Excel available: {'✓' if self.msexcel_available else '✗'}")
+        print(f"MS PowerPoint available: {'✓' if self.mspowerpoint_available else '✗'}")
+        
+        # Count total available converters
+        available_count = sum([
+            bool(self.soffice_path),
+            self.msword_available,
+            self.msexcel_available, 
+            self.mspowerpoint_available
+        ])
+        
+        if available_count == 0:
+            print("⚠️  WARNUNG: Keine Office-Konverter verfügbar!")
+            print("   Installieren Sie LibreOffice oder MS Office für Office-Dokumentkonvertierung.")
+        else:
+            print(f"✓ {available_count} Konverter verfügbar")
+        print("=" * 35)
+
+    def _show_detailed_error(self, title, message, detailed_info=None):
+        """Show a detailed error message with expandable details."""
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Warning)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(message)
+        
+        if detailed_info:
+            msg_box.setDetailedText(detailed_info)
+        
+        msg_box.exec()
+
+    def _get_conversion_capability_info(self):
+        """Get detailed information about conversion capabilities."""
+        info = []
+        info.append("VERFÜGBARE KONVERTER:")
+        
+        if self.soffice_path:
+            info.append(f"✓ LibreOffice: {self.soffice_path}")
+            info.append("  Unterstützt: .doc, .docx, .xls, .xlsx, .ppt, .pptx, .odt, .ods, .odp")
+        else:
+            info.append("✗ LibreOffice: Nicht installiert")
+        
+        if self.msword_available:
+            info.append("✓ MS Word: Verfügbar")
+            info.append("  Unterstützt: .doc, .docx")
+        else:
+            info.append("✗ MS Word: Nicht verfügbar")
+        
+        if self.msexcel_available:
+            info.append("✓ MS Excel: Verfügbar") 
+            info.append("  Unterstützt: .xls, .xlsx")
+        else:
+            info.append("✗ MS Excel: Nicht verfügbar")
+        
+        if self.mspowerpoint_available:
+            info.append("✓ MS PowerPoint: Verfügbar")
+            info.append("  Unterstützt: .ppt, .pptx")
+        else:
+            info.append("✗ MS PowerPoint: Nicht verfügbar")
+        
+        info.append("\nIMMER UNTERSTÜTZTE FORMATE:")
+        info.append("• Bilder: .jpg, .jpeg, .png, .bmp, .gif, .tiff, .heic, .heif")
+        info.append("• Text: .txt, .rtf")
+        info.append("• Web: .html, .htm")
+        info.append("• Vektor: .svg")
+        info.append("• PDF: .pdf (direktes Zusammenführen)")
+        
+        return "\n".join(info)
 
 # For basic testing if run directly (optional)
 if __name__ == '__main__':

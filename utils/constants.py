@@ -52,5 +52,12 @@ RTF_EXTENSIONS = [".rtf"]
 HTML_EXTENSIONS = [".html", ".htm"]
 SVG_EXTENSIONS = [".svg"]
 
+MS_WORD_EXTENSIONS = [".doc", ".docx"]
+MS_EXCEL_EXTENSIONS = [".xls", ".xlsx"]
+MS_POWERPOINT_EXTENSIONS = [".ppt", ".pptx"]
+ODF_TEXT_EXTENSIONS = [".odt"]
+ODF_SPREADSHEET_EXTENSIONS = [".ods"]
+ODF_PRESENTATION_EXTENSIONS = [".odp"]
+
 # It might also be useful to have a mapping from extension to a more general type
 # e.g., EXT_TO_TYPE_MAP = {ext: "image" for ext in IMAGE_EXTENSIONS} ... etc. 
