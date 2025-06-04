@@ -4,6 +4,7 @@ import shutil # For copying PDFs in separate processing
 import tempfile
 import subprocess # Added
 import platform # Added
+import traceback # Added for detailed error reporting
 from PyPDF2 import PdfWriter, PdfReader 
 from PIL import Image, UnidentifiedImageError, ImageSequence
 from xhtml2pdf import pisa
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QGroupBox, QCheckBox,
     QApplication, QFrame, QFileIconProvider
 )
-from PySide6.QtCore import Qt, QUrl, QSize, QFileInfo, QEvent
+from PySide6.QtCore import Qt, QUrl, QSize, QFileInfo, QEvent, Signal
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QKeyEvent
 
 from utils.common_helpers import parse_dropped_files 
@@ -69,6 +70,8 @@ else:
     pptxtopdf_convert_bulk = None
 
 class FileProcessingTab(QWidget): # Renamed class
+    files_processed_for_recent_list = Signal(list) # Signal to emit for recently used files
+
     def __init__(self, app_root=None):
         super().__init__()
         self.app_root = app_root
@@ -140,9 +143,9 @@ class FileProcessingTab(QWidget): # Renamed class
         main_layout.addWidget(options_frame)
 
         action_layout = QVBoxLayout()
-        self.process_button = QPushButton("Dateien verarbeiten & speichern") 
-        self.process_button.clicked.connect(self._execute_processing) 
-        action_layout.addWidget(self.process_button)
+        self.unified_action_button = QPushButton("Speichern / Aktion ausführen") # Renamed and text changed
+        self.unified_action_button.clicked.connect(self._handle_unified_action) # Connect to new handler
+        action_layout.addWidget(self.unified_action_button)
         self.processing_status_label = QLabel("") 
         self.processing_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         action_layout.addWidget(self.processing_status_label)
@@ -291,42 +294,55 @@ class FileProcessingTab(QWidget): # Renamed class
                 item.setSelected(True)
     
     def _get_q_icon_for_file(self, file_path):
-        provider = QFileIconProvider()
+        # Ensure this method correctly handles file_path to provide an icon
+        # This is used by _refresh_list_widget_items
         file_info = QFileInfo(file_path)
-        q_icon = provider.icon(file_info)
-        if not q_icon or q_icon.isNull():
-            _, ext = os.path.splitext(file_path.lower())
-            pixmap = QPixmap(self.preview_size)
-            pixmap.fill(Qt.GlobalColor.lightGray)
-            painter = QPainter(pixmap)
-            text = ext.replace(".","").upper() if ext else "FILE"
-            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
-            painter.end()
-            q_icon = QIcon(pixmap)
-        return q_icon
+        icon_provider = QFileIconProvider()
+        icon = icon_provider.icon(file_info)
+        if icon.isNull(): # Fallback if system icon is not good
+            # Attempt to create a basic pixmap if it's an image, or generic file icon
+            ext = file_info.suffix().lower()
+            if ext in IMAGE_EXTENSIONS:
+                try:
+                    pixmap = QPixmap(file_path)
+                    if not pixmap.isNull():
+                        return QIcon(pixmap.scaled(self.preview_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                except Exception:
+                    pass # Ignore if pixmap creation fails
+            return QApplication.style().standardIcon(QApplication.Style.StandardPixmap.SP_FileIcon)
+        return icon
 
-    def _add_files_to_gui_list(self, file_paths): # Renamed from _add_files_to_list to avoid conflict if any
-        added_count = 0
-        skipped_unsupported = 0
+    def _add_files_to_gui_list(self, file_paths):
+        added_to_processing_list_paths = [] # Paths newly added to self.selected_files_for_processing
+        processed_any_paths = False # Flag to check if any path was processed (even if duplicate)
+
         for file_path in file_paths:
-            if not any(file_path == existing_fp for existing_fp in self.selected_files_for_processing):
-                _, ext = os.path.splitext(file_path.lower())
-                # ALL_SUPPORTED_EXT_PATTERNS_LIST now includes .pdf
-                if ext in ALL_SUPPORTED_EXT_PATTERNS_LIST:
-                    self.selected_files_for_processing.append(file_path)
-                    added_count += 1
-                else:
-                    skipped_unsupported +=1
-                    print(f"Skipping unsupported file type: {file_path}")
-        
-        if added_count > 0:
-            self._refresh_list_widget_items()
-            self.processing_status_label.setText(f"{added_count} Datei(en) zur Liste hinzugefügt.")
-        if skipped_unsupported > 0:
-             QMessageBox.information(self, "Nicht unterstützte Dateien", f"{skipped_unsupported} Datei(en) wurden nicht hinzugefügt, da ihr Typ nicht unterstützt wird.")
-        elif added_count == 0 and skipped_unsupported == 0 : # No new files added at all
-             self.processing_status_label.setText("Keine neuen Dateien hinzugefügt (ggf. bereits vorhanden oder nicht unterstützt).")
+            processed_any_paths = True
+            if not os.path.exists(file_path):
+                print(f"Datei {file_path} nicht gefunden.")
+                # Optionally: self.processing_status_label.setText(f"Datei nicht gefunden: {os.path.basename(file_path)}")
+                continue
+            
+            _, ext = os.path.splitext(file_path.lower())
+            if ext not in ALL_SUPPORTED_EXT_PATTERNS_LIST:
+                print(f"Nicht unterstützter Dateityp: {file_path}")
+                # Optionally: self.processing_status_label.setText(f"Typ nicht unterstützt: {os.path.basename(file_path)}")
+                # QMessageBox.warning(self, "Nicht unterstützter Typ", ...)
+                continue # Skip unsupported files
 
+            if file_path not in self.selected_files_for_processing:
+                self.selected_files_for_processing.append(file_path)
+                added_to_processing_list_paths.append(file_path)
+            else:
+                print(f"File {file_path} is already in the processing list.")
+        
+        if added_to_processing_list_paths: # If any new unique files were added to the data model
+            self._refresh_list_widget_items() # Rebuilds QListWidget from self.selected_files_for_processing
+            self.files_processed_for_recent_list.emit(added_to_processing_list_paths) 
+            self.processing_status_label.setText(f"{len(added_to_processing_list_paths)} Datei(en) hinzugefügt.")
+        elif processed_any_paths: # Files were provided, but none were new to selected_files_for_processing
+            self.processing_status_label.setText("Ausgewählte Datei(en) bereits in der Liste oder nicht unterstützt.")
+        # If no file_paths were given or all were invalid before checks, label remains unchanged or handled by individual checks
 
     def _add_files_to_process_list(self): # Renamed method
         # FILETYPES_FOR_DIALOG is now correctly configured due to constants.py change
@@ -411,40 +427,119 @@ class FileProcessingTab(QWidget): # Renamed class
     def _move_process_item_down(self): # Renamed method
         self._move_item_in_list(1)
 
-    def _execute_processing(self): # Renamed method
-        selected_qlist_items = self.file_list_widget.selectedItems()
-        if not selected_qlist_items:
-            # Show detailed message about what formats are supported
-            detailed_info = self._get_conversion_capability_info()
-            self._show_detailed_error(
-                "Keine Auswahl", 
-                "Bitte wählen Sie Dateien aus der Liste für die Verarbeitung aus.",
-                detailed_info
-            )
-            return
+    def _handle_unified_action(self):
+        pages_specified_in_modify_tab = self.modify_pages_widget.has_pages_to_modify()
 
-        files_to_actually_process = [item.data(Qt.ItemDataRole.UserRole) for item in selected_qlist_items]
-
-        # Check if all selected files exist
-        missing_files = [f for f in files_to_actually_process if not os.path.exists(f)]
-        if missing_files:
-            missing_list = "\n".join([f"• {os.path.basename(f)}" for f in missing_files])
-            self._show_detailed_error(
-                "Fehlende Dateien",
-                f"{len(missing_files)} Datei(en) wurden nicht gefunden:",
-                f"Fehlende Dateien:\n{missing_list}"
-            )
-            return
-
-        # self._update_internal_file_list_from_widget() # Ensure order is correct - order is from selection now
-
-        if self.single_pdf_output_check.isChecked():
-            if len(files_to_actually_process) == 1 and files_to_actually_process[0].lower().endswith(".pdf"):
-                 QMessageBox.information(self, "Einzelne PDF", "Nur eine einzelne PDF-Datei ausgewählt. Es gibt nichts zum Zusammenführen. Sie können die Datei ggf. über 'Speichern unter' kopieren, wenn Sie den Modus für separate Dateien wählen.")
-                 return
-            self._process_files_to_single_pdf(files_to_actually_process) # Pass selected files
+        if pages_specified_in_modify_tab:
+            # User wants to modify pages. A single PDF must be selected from the list.
+            selected_list_items = self.file_list_widget.selectedItems()
+            
+            if len(selected_list_items) == 1:
+                item_data = selected_list_items[0].data(Qt.ItemDataRole.UserRole)
+                # Ensure item_data is a string path before calling .lower()
+                if item_data and isinstance(item_data, str) and item_data.lower().endswith(".pdf"):
+                    # Correct selection for page modification.
+                    self.modify_pages_widget.load_pdf(item_data) 
+                    
+                    if self.modify_pages_widget.is_ready_for_action(): # Should be true
+                        self.processing_status_label.setText("Bearbeite Seiten...")
+                        QApplication.processEvents()
+                        success = self.modify_pages_widget.public_perform_action_and_save()
+                        if success:
+                            self.processing_status_label.setText("Seitenbearbeitung erfolgreich abgeschlossen.")
+                            # ModifyPagesTab clears itself on success
+                        else:
+                            self.processing_status_label.setText("Seitenbearbeitung fehlgeschlagen oder abgebrochen.")
+                            # Ensure ModifyPagesTab is reset if its own save/clear failed
+                            self.modify_pages_widget.clear_loaded_pdf()
+                        return # Page modification attempted, stop here.
+                    else:
+                        # This case should be rare if logic is sound (e.g. load_pdf failed silently)
+                        QMessageBox.warning(self, "Fehler bei Seitenbearbeitung", 
+                                            "Konnte PDF nicht für Seitenbearbeitung vorbereiten, obwohl Seiten angegeben und PDF ausgewählt wurde.")
+                        self.processing_status_label.setText("Fehlerhafte Vorbereitung zur Seitenbearbeitung.")
+                        self.modify_pages_widget.clear_loaded_pdf()
+                        return
+                else:
+                    # Single item selected, but not a PDF.
+                    QMessageBox.warning(self, "Ungültige Auswahl für Seitenbearbeitung", 
+                                        "Sie haben Seiten zur Bearbeitung angegeben. Bitte wählen Sie eine einzelne PDF-Datei aus der oberen Liste aus.")
+                    self.processing_status_label.setText("Warten auf korrekte PDF-Auswahl für Seitenbearbeitung.")
+                    self.modify_pages_widget.clear_loaded_pdf() # Clear any previously loaded PDF
+                    return
+            else:
+                # 0 or >1 items selected.
+                QMessageBox.warning(self, "Auswahl für Seitenbearbeitung erforderlich", 
+                                    "Sie haben Seiten zur Bearbeitung angegeben. Bitte wählen Sie genau eine PDF-Datei aus der oberen Liste aus.")
+                self.processing_status_label.setText("Warten auf korrekte PDF-Auswahl für Seitenbearbeitung.")
+                self.modify_pages_widget.clear_loaded_pdf()
+                return
         else:
-            self._process_files_to_separate_pdfs(files_to_actually_process) # Pass selected files
+            # No pages specified in ModifyPagesTab. Proceed with file list processing.
+            # Ensure ModifyPagesTab is clean, in case it had a loaded PDF but no pages specified.
+            self.modify_pages_widget.clear_loaded_pdf() 
+            self._execute_processing() # Original method for processing file list
+
+    def _execute_processing(self): # Renamed method
+        if self.file_list_widget.count() == 0:
+            QMessageBox.information(self, "Keine Dateien", "Bitte fügen Sie zuerst Dateien zur Liste hinzu.")
+            self.processing_status_label.setText("Keine Dateien für Verarbeitung.")
+            return
+
+        files_to_process = []
+        for i in range(self.file_list_widget.count()):
+            item = self.file_list_widget.item(i)
+            file_path = item.data(Qt.ItemDataRole.UserRole)
+            if file_path: # Ensure item has a file path
+                files_to_process.append(file_path)
+
+        if not files_to_process:
+            QMessageBox.information(self, "Keine gültigen Dateien", 
+                                    "Die Liste enthält keine Elemente mit gültigen Dateipfaden.")
+            self.processing_status_label.setText("Keine gültigen Dateien für Verarbeitung.")
+            return
+
+        # Use a copy for processing to avoid issues if the list is modified elsewhere during processing
+        # This was how it was done with self.selected_files_for_processing[:]
+        # files_to_process is already a new list here.
+
+        self.processing_status_label.setText("Verarbeite Dateien...")
+        QApplication.processEvents() # Update UI
+
+        output_directory = ""
+        # Determine output directory for individual file saving if not merging
+        if not self.single_pdf_output_check.isChecked() and files_to_process:
+            # Always ask for an output directory if not merging to a single file
+            output_directory = QFileDialog.getExistingDirectory(
+                self, "Ausgabeverzeichnis für separate PDF(s) auswählen", # Clarified title
+                os.path.dirname(files_to_process[0]) if files_to_process else ""
+            )
+            if not output_directory:
+                self.processing_status_label.setText("Verarbeitung abgebrochen. Kein Ausgabeverzeichnis gewählt.")
+                return
+
+        try:
+            if self.single_pdf_output_check.isChecked():
+                if len(files_to_process) == 1 and files_to_process[0].lower().endswith(".pdf"):
+                    # If it's a single PDF and we want a single output, it's essentially a copy/rename operation.
+                    # Or, it could imply that no processing is needed, but we should still offer to save it.
+                    # For now, let's treat it like any other single file to be "processed" into a single PDF.
+                    pass # The existing logic in _process_files_to_single_pdf will handle this.
+
+                self._process_files_to_single_pdf(files_to_process)
+            else:
+                self._process_files_to_separate_pdfs(files_to_process, output_directory)
+            
+            # Status messages are set within the _process_files... methods
+            # self.processing_status_label.setText("Dateiverarbeitung abgeschlossen.") 
+            # QMessageBox.information(self, "Erfolg", "Dateiverarbeitung erfolgreich abgeschlossen.")
+
+        except Exception as e:
+            detailed_error = traceback.format_exc()
+            self._show_detailed_error("Verarbeitungsfehler", 
+                                      f"Ein Fehler ist während der Dateiverarbeitung aufgetreten: {e}",
+                                      detailed_info=detailed_error)
+            self.processing_status_label.setText(f"Fehler bei Dateiverarbeitung: {e}")
 
     def _process_files_to_single_pdf(self, files_to_process):
         if not files_to_process:
@@ -627,14 +722,9 @@ class FileProcessingTab(QWidget): # Renamed class
         
         self.processing_status_label.setText("Bereit.")
 
-    def _process_files_to_separate_pdfs(self, files_to_process):
+    def _process_files_to_separate_pdfs(self, files_to_process, output_directory):
         if not files_to_process:
             self.processing_status_label.setText("Keine Dateien zum Verarbeiten ausgewählt.")
-            return
-
-        output_folder = QFileDialog.getExistingDirectory(self, "Zielordner für separate PDFs auswählen", os.getcwd())
-        if not output_folder:
-            self.processing_status_label.setText("Speichervorgang abgebrochen.")
             return
 
         self.processing_status_label.setText("Verarbeite Dateien zu separaten PDFs...")
@@ -653,7 +743,7 @@ class FileProcessingTab(QWidget): # Renamed class
             base, ext = os.path.splitext(current_file_basename)
             ext = ext.lower()
             output_pdf_name = f"{base}.pdf"
-            final_output_pdf_path = os.path.join(output_folder, output_pdf_name)
+            final_output_pdf_path = os.path.join(output_directory, output_pdf_name)
             
             conversion_successful_flag = False
 
@@ -735,17 +825,17 @@ class FileProcessingTab(QWidget): # Renamed class
                                         final_message + "\\n\\nMöchten Sie den Ausgabeordner öffnen?",
                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
                                         QMessageBox.StandardButton.Yes)
-        if reply == QMessageBox.StandardButton.Yes and os.path.exists(output_folder):
+        if reply == QMessageBox.StandardButton.Yes and os.path.exists(output_directory):
             try:
                 # Use os.startfile on Windows, and 'open' on macOS, 'xdg-open' on Linux
                 if platform.system() == "Windows":
-                    os.startfile(output_folder)
+                    os.startfile(output_directory)
                 elif platform.system() == "Darwin": # macOS
-                    subprocess.run(["open", output_folder])
+                    subprocess.run(["open", output_directory])
                 else: # Linux and other Unix-like
-                    subprocess.run(["xdg-open", output_folder])
+                    subprocess.run(["xdg-open", output_directory])
             except Exception as e:
-                QMessageBox.warning(self, "Ordner öffnen Fehler", f"Der Ordner '{output_folder}' konnte nicht geöffnet werden.\\nFehler: {e}")
+                QMessageBox.warning(self, "Ordner öffnen Fehler", f"Der Ordner '{output_directory}' konnte nicht geöffnet werden.\\nFehler: {e}")
 
         self.processing_status_label.setText("Bereit.")
 
@@ -1299,6 +1389,25 @@ class FileProcessingTab(QWidget): # Renamed class
         info.append("• PDF: .pdf (direktes Zusammenführen)")
         
         return "\n".join(info)
+
+    # New public slot for adding a single file (e.g., from file explorer double-click)
+    def add_single_file_from_path(self, file_path: str):
+        if not file_path or not os.path.isfile(file_path):
+            print(f"Ungültiger Dateipfad von Explorer erhalten: {file_path}")
+            self.processing_status_label.setText(f"Ungültiger Pfad: {os.path.basename(file_path if file_path else "N/A")}")
+            return
+
+        _, ext = os.path.splitext(file_path.lower())
+        # Ensure ALL_SUPPORTED_EXT_PATTERNS_LIST is comprehensive enough for files from explorer
+        # Typically, explorer will show PDFs, so this check should pass for intended files.
+        if ext not in ALL_SUPPORTED_EXT_PATTERNS_LIST:
+            QMessageBox.warning(self, "Nicht unterstützter Dateityp", 
+                                f"Die Datei '{os.path.basename(file_path)}' vom Explorer hat einen nicht unterstützten Dateityp ({ext}).")
+            self.processing_status_label.setText(f"Explorer: Typ nicht unterstützt: {os.path.basename(file_path)}")
+            return
+
+        # Use the existing logic to add to GUI list and internal tracking
+        self._add_files_to_gui_list([file_path]) # Pass as a list
 
 # For basic testing if run directly (optional)
 if __name__ == '__main__':

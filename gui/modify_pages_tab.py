@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QGroupBox, QRadioButton, QApplication
 )
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from utils.common_helpers import parse_page_ranges
 
 class ModifyPagesTab(QWidget):
@@ -27,10 +28,22 @@ class ModifyPagesTab(QWidget):
         self.delete_radio = QRadioButton("Seiten löschen")
         self.delete_radio.setChecked(True) # Default mode
         self.delete_radio.toggled.connect(lambda: self._set_mode("delete"))
+        self.delete_radio.setStyleSheet("QRadioButton { text-decoration: none; font-weight: normal; }")
+        # Create explicit font without underline
+        font = QFont()
+        font.setUnderline(False)
+        font.setBold(False)
+        self.delete_radio.setFont(font)
         mode_layout.addWidget(self.delete_radio)
 
         self.extract_radio = QRadioButton("Seiten extrahieren")
         self.extract_radio.toggled.connect(lambda: self._set_mode("extract"))
+        self.extract_radio.setStyleSheet("QRadioButton { text-decoration: none; font-weight: normal; }")
+        # Create explicit font without underline
+        font2 = QFont()
+        font2.setUnderline(False)
+        font2.setBold(False)
+        self.extract_radio.setFont(font2)
         mode_layout.addWidget(self.extract_radio)
         
         main_layout.addWidget(mode_group)
@@ -40,16 +53,11 @@ class ModifyPagesTab(QWidget):
         self.controls_group = controls_group # To access it later for setTitle
         controls_layout = QVBoxLayout(controls_group)
 
-        # File Selection
-        file_select_layout = QHBoxLayout()
-        self.select_button = QPushButton("PDF auswählen")
-        self.select_button.clicked.connect(self._select_pdf)
-        file_select_layout.addWidget(self.select_button)
-
-        self.selected_file_label = QLabel("Keine Datei ausgewählt.")
-        self.selected_file_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        file_select_layout.addWidget(self.selected_file_label, 1)
-        controls_layout.addLayout(file_select_layout)
+        # File Display (replaces selection button)
+        self.loaded_pdf_display_label = QLabel("Keine PDF-Datei zum Bearbeiten geladen.")
+        self.loaded_pdf_display_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.loaded_pdf_display_label.setWordWrap(True) # In case of long names
+        controls_layout.addWidget(self.loaded_pdf_display_label)
 
         # Page Input
         page_input_layout = QHBoxLayout()
@@ -65,9 +73,9 @@ class ModifyPagesTab(QWidget):
 
         # --- Action Area ---
         action_layout = QVBoxLayout()
-        self.execute_button = QPushButton() # Text will be set dynamically
-        self.execute_button.clicked.connect(self._execute_action)
-        action_layout.addWidget(self.execute_button)
+        # self.execute_button = QPushButton() # Text will be set dynamically # REMOVED
+        # self.execute_button.clicked.connect(self.public_perform_action_and_save) # REMOVED (formerly _execute_action)
+        # action_layout.addWidget(self.execute_button) # REMOVED
 
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -77,6 +85,29 @@ class ModifyPagesTab(QWidget):
         main_layout.addStretch()
 
         self.setLayout(main_layout)
+
+    def load_pdf(self, pdf_path):
+        """Loads a PDF path for modification."""
+        self.input_pdf_path = pdf_path
+        if pdf_path:
+            self.loaded_pdf_display_label.setText(f"Bearbeite: {os.path.basename(pdf_path)}")
+        else: # Should ideally not be called with None here, clear_loaded_pdf is for that
+            self.loaded_pdf_display_label.setText("Fehler: Ungültiger PDF-Pfad empfangen.")
+        
+        QApplication.processEvents() # Force UI update for the label
+        
+        self.status_label.setText("") # Clear previous status
+
+    def clear_loaded_pdf(self):
+        """Clears the currently loaded PDF and related fields."""
+        self.input_pdf_path = None
+        self.loaded_pdf_display_label.setText("Keine PDF-Datei zum Bearbeiten geladen.")
+        self.pages_entry.setText("")
+        self.status_label.setText("Bereit für PDF-Auswahl aus oberer Liste und Seiteneingabe.")
+
+    def has_pages_to_modify(self):
+        """Checks if page numbers have been entered for modification."""
+        return bool(self.pages_entry.text().strip())
 
     def _set_mode(self, mode):
         if self.delete_radio.isChecked() and mode == "delete":
@@ -90,75 +121,59 @@ class ModifyPagesTab(QWidget):
             self.controls_group.setTitle("PDF auswählen und zu löschende Seiten angeben")
             self.pages_label.setText("Zu löschende Seiten (z.B. 1, 3, 5-7):")
             self.pages_entry.setPlaceholderText("z.B. 1,3,5-7")
-            self.execute_button.setText("Seiten löschen und speichern")
         else: # extract mode
             self.controls_group.setTitle("PDF auswählen und Seiten/Bereiche für Extraktion angeben")
             self.pages_label.setText("Zu extrahierende Seiten/Bereiche (z.B. 1-3, 5, 7-9):")
             self.pages_entry.setPlaceholderText("z.B. 1-3, 5, 7-9")
-            self.execute_button.setText("Seiten extrahieren und speichern")
         # Clear status on mode change if a file was previously processed
-        if self.input_pdf_path:
-            self.status_label.setText("Modus geändert. Bereit für neue Aktion.")
-        else:
-            self.status_label.setText("")
+        if self.input_pdf_path: # A file might be loaded
+            self.status_label.setText(f"Modus auf '{self.current_mode}' geändert. PDF '{os.path.basename(self.input_pdf_path)}' geladen.")
+        elif self.has_pages_to_modify(): # Pages entered but no PDF yet
+            self.status_label.setText(f"Modus auf '{self.current_mode}' geändert. Seiten eingegeben, PDF oben auswählen.")
+        else: # Clean state
+            self.status_label.setText(f"Modus auf '{self.current_mode}' geändert. Bereit.")
+        # self.pages_entry.setText("") # Don't clear pages on mode change
 
-
-    def _select_pdf(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "PDF-Datei auswählen",
-            "",
-            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
-        )
-        if file_path:
-            self.input_pdf_path = file_path
-            self.selected_file_label.setText(os.path.basename(file_path))
-            self.status_label.setText(f"Datei ausgewählt. '{self.current_mode.capitalize()}' Modus aktiv.")
-        else:
-            self.input_pdf_path = None
-            self.selected_file_label.setText("Keine Datei ausgewählt.")
-            self.status_label.setText("Dateiauswahl abgebrochen.")
-
-    def _execute_action(self):
+    def public_perform_action_and_save(self):
         if not self.input_pdf_path:
             QMessageBox.warning(self, "Keine PDF ausgewählt", "Bitte wählen Sie zuerst eine PDF-Datei aus.")
-            return
+            return False
 
         pages_str = self.pages_entry.text()
         if not pages_str:
-            QMessageBox.warning(self, "Keine Seiten angegeben", 
+            QMessageBox.warning(self, "Keine Seiten angegeben",
                                 f"Bitte geben Sie die zu {self.current_mode}enden Seitenzahlen oder Bereiche ein.")
-            return
+            return False
 
         try:
             input_pdf = PdfReader(self.input_pdf_path)
             total_pages = len(input_pdf.pages)
             # parse_page_ranges returns 0-based indices
-            target_indices = parse_page_ranges(pages_str, total_pages) 
+            target_indices = parse_page_ranges(pages_str, total_pages)
         except ValueError as e:
             QMessageBox.critical(self, "Ungültige Seiteneingabe", str(e))
             self.status_label.setText(f"Fehler: {e}")
-            return
+            return False
         except Exception as e:
             QMessageBox.critical(self, "Fehler beim Lesen der PDF", f"PDF konnte nicht gelesen werden: {e}")
             self.status_label.setText("Fehler beim Lesen der PDF.")
-            return
+            return False
 
         if not target_indices:
-            QMessageBox.information(self, "Keine gültigen Seiten", 
+            QMessageBox.information(self, "Keine gültigen Seiten",
                                     f"Keine gültigen Seiten zum {self.current_mode} angegeben.")
             self.status_label.setText(f"Keine gültigen Seiten zum {self.current_mode}.")
-            return
+            return False
 
         pdf_writer = PdfWriter()
         action_performed = False
 
         if self.current_mode == "delete":
             if all(p_idx in target_indices for p_idx in range(total_pages)):
-                QMessageBox.warning(self, "Alle Seiten ausgewählt", 
+                QMessageBox.warning(self, "Alle Seiten ausgewählt",
                                     "Sie haben alle Seiten zum Löschen ausgewählt. Dies würde zu einer leeren PDF führen.")
                 self.status_label.setText("Kann nicht alle Seiten löschen.")
-                return
+                return False
 
             for i in range(total_pages):
                 if i not in target_indices:
@@ -167,7 +182,7 @@ class ModifyPagesTab(QWidget):
             if len(pdf_writer.pages) == 0: # Should be caught by 'all pages selected' but as a safeguard
                  QMessageBox.warning(self, "Leeres Ergebnis", "Alle angegebenen Seiten wurden gelöscht, was zu einer leeren PDF führt. Datei nicht gespeichert.")
                  self.status_label.setText("Die resultierende PDF wäre leer. Vorgang abgebrochen.")
-                 return
+                 return False
             action_performed = True
             initial_save_name_suffix = "_gelöscht"
             success_message = "Seiten erfolgreich gelöscht."
@@ -175,21 +190,21 @@ class ModifyPagesTab(QWidget):
         else: # extract mode
             for page_index in target_indices:
                 # Ensure page_index is valid (parse_page_ranges should handle this, but double check)
-                if 0 <= page_index < total_pages: 
+                if 0 <= page_index < total_pages:
                     pdf_writer.add_page(input_pdf.pages[page_index])
             
             if len(pdf_writer.pages) == 0:
-                QMessageBox.warning(self, "Leeres Ergebnis", 
+                QMessageBox.warning(self, "Leeres Ergebnis",
                                     "Es wurden keine Seiten extrahiert, die PDF wäre leer. Datei nicht gespeichert.")
                 self.status_label.setText("Keine Seiten extrahiert. Vorgang abgebrochen.")
-                return
+                return False
             action_performed = True
             initial_save_name_suffix = "_extrahiert"
             success_message = "Seiten erfolgreich extrahiert."
 
         if not action_performed or len(pdf_writer.pages) == 0 : # Should not happen if logic above is correct
             self.status_label.setText(f"Keine Aktion durchgeführt oder Ergebnis wäre leer.")
-            return
+            return False
 
         base_name = os.path.splitext(os.path.basename(self.input_pdf_path))[0]
         initial_name = f"{base_name}{initial_save_name_suffix}.pdf"
@@ -203,23 +218,30 @@ class ModifyPagesTab(QWidget):
 
         if not output_filename:
             self.status_label.setText(f"{self.current_mode.capitalize()} abgebrochen.")
-            return
+            return False
 
         try:
             self.status_label.setText(f"{self.current_mode.capitalize()} Seiten...")
-            QApplication.processEvents() 
+            QApplication.processEvents()
 
             with open(output_filename, 'wb') as out_pdf:
                 pdf_writer.write(out_pdf)
             
-            QMessageBox.information(self, "Erfolg", 
+            QMessageBox.information(self, "Erfolg",
                                     f"{success_message} Gespeichert unter {os.path.basename(output_filename)}")
             self.status_label.setText(f"{self.current_mode.capitalize()} erfolgreich!")
+            self.clear_loaded_pdf() # Reset after successful action
+            return True # Indicate success
 
         except Exception as e:
-            QMessageBox.critical(self, f"Fehler beim {self.current_mode} der Seiten", 
+            QMessageBox.critical(self, f"Fehler beim {self.current_mode} der Seiten",
                                  f"Ein Fehler ist aufgetreten: {e}")
             self.status_label.setText(f"Fehler während {self.current_mode}.")
+            return False
+
+    def is_ready_for_action(self):
+        """Checks if a PDF is loaded and page numbers are entered."""
+        return bool(self.input_pdf_path and self.pages_entry.text().strip())
 
 # Basic test structure if run directly (optional)
 if __name__ == '__main__':
