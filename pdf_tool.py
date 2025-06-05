@@ -1,7 +1,7 @@
 import sys
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QToolBar, 
-    QLabel, QRadioButton, QMenu, QMenuBar, QSizePolicy, QSplitter, QComboBox, QPushButton, QHBoxLayout, QGraphicsOpacityEffect # Added QComboBox, QPushButton, QHBoxLayout, QGraphicsOpacityEffect
+    QLabel, QRadioButton, QMenu, QMenuBar, QSizePolicy, QSplitter, QComboBox, QPushButton, QHBoxLayout, QGraphicsOpacityEffect, QTextEdit, QVBoxLayout # Added QComboBox, QPushButton, QHBoxLayout, QGraphicsOpacityEffect, QTextEdit, QVBoxLayout
 )
 from PySide6.QtGui import QIcon, QAction, QActionGroup # Added QAction, QActionGroup
 from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer, QPropertyAnimation, QEasingCurve # Added QEvent, QTimer, QPropertyAnimation, QEasingCurve
@@ -24,9 +24,9 @@ import qdarktheme
 # We will assume these are (or will be) PySide6 QWidget classes
 # from gui.merge_tab import MergeTab # Removed
 # from gui.convert_tab import ConvertTab # Removed
-from gui.modify_pages_tab import ModifyPagesTab 
 from gui.file_processing_tab import FileProcessingTab # Added
 from gui.file_explorer_widget import FileExplorerWidget # Added
+from gui.pdf_advanced_operations_widget import PDFAdvancedOperationsWidget 
 
 # Modern dark theme stylesheet (No longer needed, will be removed or commented)
 # DARK_STYLE = \"\"\"
@@ -54,6 +54,10 @@ class MainWindow(QMainWindow):
         self.is_fading = False
         self.pending_theme = None
 
+        # Initialize console output
+        self.console_output = QTextEdit()
+        self.console_output.setReadOnly(True)
+
         # Set Window Icon
         # Make sure 'Graphicloads-Filetype-Pdf.ico' is in the same directory as pdf_tool.py
         # or provide the correct path.
@@ -80,11 +84,49 @@ class MainWindow(QMainWindow):
             self._initial_theme_applied = True
 
     def _create_toolbar(self):
-        """Create toolbar with theme toggle and view mode dropdown"""
+        """Create toolbar with PDF function buttons on the left and theme controls on the right"""
         self.toolbar = QToolBar("Hauptwerkzeugleiste")
         self.addToolBar(self.toolbar)
         
-        # Add spacer to push items to the right
+        # PDF function buttons on the left
+        # self.password_button = QPushButton("PDF Passwort") # Removed
+        # self.password_button.setMinimumWidth(100) # Removed
+        # self.password_button.clicked.connect(self._show_password_dialog) # Removed
+        # self.toolbar.addWidget(self.password_button) # Removed
+        
+        # "PDF bearbeiten" button removed
+        # self.edit_pdf_button = QPushButton("PDF bearbeiten")
+        # self.edit_pdf_button.setMinimumWidth(100)
+        # self.edit_pdf_button.clicked.connect(self._show_edit_pdf_dialog)
+        # self.toolbar.addWidget(self.edit_pdf_button)
+        
+        # Repurposed "Seiten löschen" button for advanced operations
+        # self.advanced_ops_button = QPushButton("PDF Anpassen") # New text
+        # self.advanced_ops_button.setMinimumWidth(100)
+        # self.advanced_ops_button.clicked.connect(self._show_advanced_ops_widget) # Connect to new/renamed slot
+        # self.toolbar.addWidget(self.advanced_ops_button)
+        
+        self.delete_pages_button = QPushButton("Seiten löschen")
+        self.delete_pages_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("delete"))
+        self.toolbar.addWidget(self.delete_pages_button)
+
+        self.extract_pages_button = QPushButton("Seiten extrahieren")
+        self.extract_pages_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("extract"))
+        self.toolbar.addWidget(self.extract_pages_button)
+
+        self.split_pdf_button = QPushButton("PDF teilen")
+        self.split_pdf_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("split"))
+        self.toolbar.addWidget(self.split_pdf_button)
+
+        self.set_password_button = QPushButton("Passwort setzen")
+        self.set_password_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("set_pwd"))
+        self.toolbar.addWidget(self.set_password_button)
+
+        self.remove_password_button = QPushButton("Passwort entfernen")
+        self.remove_password_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("remove_pwd"))
+        self.toolbar.addWidget(self.remove_password_button)
+
+        # Add spacer to push theme controls to the right
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.toolbar.addWidget(spacer)
@@ -113,6 +155,7 @@ class MainWindow(QMainWindow):
     def _toggle_theme(self):
         """Toggle between dark and light theme with fade effect"""
         new_theme = "light" if self.current_theme == "dark" else "dark"
+        self.log_message(f"Theme gewechselt zu: {new_theme.upper()}")
         self._set_theme_with_fade(new_theme)
 
     def _update_view_mode_button_text(self):
@@ -125,39 +168,29 @@ class MainWindow(QMainWindow):
     def _toggle_view_mode(self):
         """Toggle between list and icon view mode"""
         new_mode = "icon" if self.current_view_mode == "list" else "list"
+        self.log_message(f"Ansichtsmodus gewechselt zu: {new_mode.upper()}")
         self._set_view_mode(new_mode)
 
     def _create_menus(self):
         # Werkzeuge-Menü entfernt - Funktionen sind in der rechten Seitenleiste verfügbar
         pass
 
-    def _show_password_dialog(self):
-        """Show dialog for setting/removing PDF password"""
-        from gui.pdf_password_dialog import PDFPasswordDialog
-        dialog = PDFPasswordDialog(self)
-        dialog.exec()
+    # def _show_password_dialog(self): # Removed
+    #     \"\"\"Show PDF password widget in function container\"\"\" # Removed
+    #     self.log_message("PDF Passwort-Widget geöffnet") # Removed
+    #     self._show_function_widget("password") # Removed
 
-    def _show_edit_pdf_dialog(self):
-        """Show dialog for editing individual PDF"""
-        from gui.pdf_edit_dialog import PDFEditDialog
-        dialog = PDFEditDialog(self)
-        dialog.exec()
+    # _show_edit_pdf_dialog method removed
+    # def _show_edit_pdf_dialog(self):
 
-    def _show_delete_pages_dialog(self):
-        """Show dialog for deleting PDF pages"""
-        from gui.modify_pages_tab import ModifyPagesTab
-        from PySide6.QtWidgets import QDialog, QVBoxLayout
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("PDF Seiten löschen/extrahieren")
-        dialog.setModal(True)
-        dialog.resize(600, 400)
-        
-        layout = QVBoxLayout(dialog)
-        modify_widget = ModifyPagesTab(app_root=self)
-        layout.addWidget(modify_widget)
-        
-        dialog.exec()
+    # Renamed method to show the new advanced operations widget
+    def _show_advanced_ops_widget(self): 
+        self.log_message("PDF Anpassen/Aufteilen-Widget geöffnet")
+        self._show_function_widget("advanced_ops") # Use new key for widget_map
+
+    def _show_advanced_ops_with_mode(self, mode):
+        self._show_function_widget("advanced_ops")
+        self.advanced_ops_widget.set_mode(mode)
 
     def _set_view_mode(self, mode):
         if self.current_view_mode != mode:
@@ -245,12 +278,31 @@ class MainWindow(QMainWindow):
             text-decoration: none !important;
             font-weight: normal !important;
             font-style: normal !important;
+            spacing: 8px;
+            margin: 4px 0px;
+        }
+        QRadioButton:hover {
+            text-decoration: none !important;
         }
         QRadioButton::indicator {
             text-decoration: none !important;
+            width: 0px;
+            height: 0px;
+            margin-right: 0px;
         }
         QRadioButton QWidget {
             text-decoration: none !important;
+        }
+        QGroupBox {
+            border: none;
+            padding-top: 15px;
+            margin-top: 5px;
+            font-weight: bold;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 0 0 0 5px;
         }
         """
 
@@ -347,6 +399,35 @@ class MainWindow(QMainWindow):
         # Update theme in file processing tab if it exists
         if hasattr(self, 'file_processing_tab') and self.file_processing_tab is not None:
             self.file_processing_tab.update_theme(self.current_theme)
+        
+        # Update theme in function widgets if they exist
+        if hasattr(self, 'function_container') and self.function_container is not None:
+            self._update_function_widgets_theme()
+        
+        # Also update console theme if it exists
+        if hasattr(self, 'console_output'):
+            # Use the same colors as the drag-and-drop areas (QListWidget)
+            if self.current_theme == "dark":
+                console_bg_color = "#3F4042"  # Same as QListWidget in dark mode
+                console_text_color = "#CCCCCC"  # Same as foreground color
+                console_border_color = "#555559"  # Same as button border
+            else:
+                console_bg_color = "#FFFFFF"  # White for light mode
+                console_text_color = "#333333"  # Dark text for light mode  
+                console_border_color = "#D0D0D0"  # Light border
+            
+            self.console_output.setStyleSheet(f"""
+                QTextEdit {{
+                    background-color: {console_bg_color};
+                    color: {console_text_color};
+                    border: 2px solid {console_border_color};
+                    border-radius: 4px;
+                    padding: 5px;
+                    margin-bottom: 5px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 9pt;
+                }}
+            """)
 
     def _set_theme_with_fade(self, theme_name):
         """Set theme with fade transition effect"""
@@ -422,56 +503,259 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Horizontal, self)
         self.setCentralWidget(self.splitter)
 
-        # Instantiate FileExplorerWidget
+        # Instantiate FileExplorerWidget (left side)
         self.file_explorer = FileExplorerWidget(self) 
         self.splitter.addWidget(self.file_explorer)
         
-        # Remove the placeholder for the left panel
-        # left_placeholder = QWidget()
-        # left_placeholder.setMinimumWidth(200) # Give it some initial size
-        # left_placeholder.setStyleSheet(\"background-color: #282c34;\") # Temporary distinct color
-        # self.splitter.addWidget(left_placeholder)
+        # Create a container for the middle (file processing tab, function widgets, and console)
+        middle_container = QWidget()
+        middle_layout = QVBoxLayout(middle_container)
+        middle_layout.setContentsMargins(0,0,0,0) # Remove margins for a tighter fit
+        middle_layout.setSpacing(5) # Spacing between widgets
 
         # Instantiate FileProcessingTab 
         self.file_processing_tab = FileProcessingTab(self) # Pass self if it needs main window reference
         self.view_mode_changed.connect(self.file_processing_tab.update_view_mode)
         
-        # Connect the file_selected_for_processing signal from the explorer
-        # to a handler in FileProcessingTab (assuming it has a method like add_file_from_path)
-        # We'll need to ensure FileProcessingTab has such a method or create a new one.
-        # For now, let's assume a method `handle_explorer_selection` exists or will be created in FileProcessingTab.
-        # For now, let's assume a method `handle_explorer_selection` exists or will be created in FileProcessingTab.
-        self.file_explorer.file_selected_for_processing.connect(self.file_processing_tab.add_single_file_from_path) # Connecting to a new dedicated slot
-        self.file_processing_tab.files_processed_for_recent_list.connect(self.add_to_recent_files) # Connect to recent files handler
+        self.file_explorer.file_selected_for_processing.connect(self.file_processing_tab.add_single_file_from_path)
+        self.file_explorer.file_selected_for_processing.connect(self._on_file_selected_for_function_widgets)
+        self.file_processing_tab.file_selected_for_function_widgets.connect(self._on_file_selected_for_function_widgets)
+        self.file_processing_tab.files_processed_for_recent_list.connect(self.add_to_recent_files)
 
-        self.splitter.addWidget(self.file_processing_tab)
+        middle_layout.addWidget(self.file_processing_tab)
         
-        # Set initial sizes for the splitter panes
-        # Give more space to the main content area initially
-        self.splitter.setSizes([250, 950]) # Adjust as needed, e.g. 25% for explorer, 75% for content
+        # Create container for PDF function widgets
+        self.function_container = QWidget()
+        self.function_container.setVisible(False)  # Initially hidden
+        self.function_layout = QVBoxLayout(self.function_container)
+        self.function_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Create widgets for PDF functions
+        self._create_function_widgets()
+        
+        middle_layout.addWidget(self.function_container)
+        
+        middle_layout.addStretch(1)
+
+        self.splitter.addWidget(middle_container) # Add the middle container to the splitter
+        
+        # Import and instantiate RecentFilesWidget (right side) with console
+        from gui.recent_files_widget import RecentFilesWidget
+        self.recent_files_widget = RecentFilesWidget(self, self.console_output)
+        self.splitter.addWidget(self.recent_files_widget)
+        
+        # Set initial sizes for the splitter panes: left explorer, middle content, right activities panel
+        self.splitter.setSizes([300, 600, 300]) # Explorer, Middle Container, Activities Panel (Recent Files + Console)
+        
+        # Log initial message
+        self.log_message("Anwendung gestartet.")
+
+    def _create_function_widgets(self):
+        """Create all PDF function widgets"""
+        # from gui.pdf_password_widget import PDFPasswordWidget # Removed
+        # PDFEditWidget import removed
+        # from gui.pdf_edit_widget import PDFEditWidget
+        # Import for PDFAdvancedOperationsWidget should already be at the top
+        
+        # Create header with close button
+        header_layout = QHBoxLayout()
+        self.function_title = QLabel("")
+        self.function_title.setStyleSheet("font-weight: bold; font-size: 14px; margin: 5px;")
+        header_layout.addWidget(self.function_title)
+        
+        header_layout.addStretch()
+        
+        close_button = QPushButton("✕")
+        close_button.setFixedSize(25, 25)
+        close_button.setStyleSheet("QPushButton { border: none; font-weight: bold; } QPushButton:hover { background-color: #ff6b6b; color: white; }")
+        close_button.clicked.connect(self._hide_function_widget)
+        header_layout.addWidget(close_button)
+        
+        self.function_layout.addLayout(header_layout)
+        
+        # Create stacked widget to hold different function widgets
+        from PySide6.QtWidgets import QStackedWidget
+        self.function_stack = QStackedWidget()
+        self.function_layout.addWidget(self.function_stack)
+        
+        # Create individual function widgets
+        # self.password_widget = PDFPasswordWidget(self) # Removed
+        # self.edit_widget instantiation removed
+        self.advanced_ops_widget = PDFAdvancedOperationsWidget(app_root=self) # New combined widget
+        
+        # Add widgets to stack
+        # self.function_stack.addWidget(self.password_widget) # Removed
+        self.function_stack.addWidget(self.advanced_ops_widget) # Add new widget to stack
+        
+        # Updated widget_map and widget_titles
+        self.widget_map = {
+            # "password": 0, # Removed
+            "advanced_ops": 0 # advanced_ops_widget is now the first widget
+        }
+        self.widget_titles = {
+            # "password": "PDF Passwort setzen/entfernen", # Removed
+            "advanced_ops": "PDF Anpassen & Passwort" # Updated title
+        }
+        # Ensure no other comments or definitions exist here until the method ends.
+
+    def _show_function_widget(self, widget_name):
+        """Show specific function widget"""
+        if widget_name in self.widget_map: # Corrected: Check in self.widget_map
+            self.function_stack.setCurrentIndex(self.widget_map[widget_name]) # Corrected: Use self.widget_map to get index
+            self.function_title.setText(self.widget_titles[widget_name])
+            self.function_container.setVisible(True)
+            
+            # Set the current selected file if any
+            if hasattr(self, 'current_selected_file') and self.current_selected_file:
+                self._set_file_for_current_widget(self.current_selected_file)
+        
+    def _hide_function_widget(self):
+        """Hide function widget container"""
+        self.function_container.setVisible(False)
+        self.log_message("Funktions-Widget geschlossen")
+
+    def _update_function_widgets_theme(self):
+        """Update theme for function widgets"""
+        if self.current_theme == "dark":
+            bg_color = "#3F4042"
+            text_color = "#CCCCCC"
+            border_color = "#555559"
+        else:
+            bg_color = "#FFFFFF"
+            text_color = "#333333"
+            border_color = "#D0D0D0"
+        
+        self.function_container.setStyleSheet(f"""
+            QWidget {{
+                background-color: {bg_color};
+                color: {text_color};
+            }}
+            QGroupBox {{
+                border: none;
+                padding-top: 15px;
+                margin-top: 5px;
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 0 0 5px;
+            }}
+            QRadioButton {{
+                text-decoration: none !important;
+                font-weight: normal !important;
+                font-style: normal !important;
+                spacing: 8px;
+                margin: 4px 0px;
+            }}
+            QRadioButton::indicator {{
+                width: 13px;
+                height: 13px;
+                margin-right: 5px;
+            }}
+        """)
+        
+        # Also call update_theme on individual widgets if they have this method
+        if hasattr(self, 'function_stack') and self.function_stack:
+            current_widget = self.function_stack.currentWidget()
+            if hasattr(current_widget, 'update_theme'):
+                current_widget.update_theme(self.current_theme)
+
+    def _on_file_selected_for_function_widgets(self, file_path):
+        """Handle file selection for function widgets"""
+        self.current_selected_file = file_path
+        # Update the currently visible widget if any
+        if self.function_container.isVisible():
+            self._set_file_for_current_widget(file_path)
+
+    def _set_file_for_current_widget(self, file_path):
+        """Set the file for the currently active function widget"""
+        current_widget = self.function_stack.currentWidget()
+        if hasattr(current_widget, 'set_pdf_file'):
+            current_widget.set_pdf_file(file_path)
+
+    def log_message(self, message: str):
+        """Appends a message to the console output widget with timestamp, filtering for document-related actions only."""
+        # Define keywords for document-related actions
+        document_keywords = [
+            "dokument", "document", "datei", "file", "pdf", "seite", "page",
+            "hinzugefügt", "added", "gelöscht", "deleted", "bearbeitet", "edited",
+            "zusammengeführt", "merged", "aufgeteilt", "split", "konvertiert", "converted",
+            "gespeichert", "saved", "geöffnet", "opened", "verschlüsselt", "encrypted",
+            "entschlüsselt", "decrypted", "erstellt", "created", "verarbeitet", "processed",
+            "extrahiert", "extracted", "passwort", "password"
+        ]
+        
+        # Define phrases to exclude (system messages)
+        exclude_phrases = [
+            "zuletzt verwendete dateien aktualisiert",
+            "liste der zuletzt verwendeten dateien aktualisiert",
+            "theme gewechselt",
+            "ansichtsmodus gewechselt",
+            "anwendung gestartet",
+            "navigiert zu:",
+            "ordner aufgeklappt",
+            "ordner eingeklappt",
+            "benutzerdefinierten ordner ausgewählt",
+            "funktions-widget geschlossen",
+            "widget geöffnet"
+        ]
+        
+        # Check if message contains any excluded phrases
+        message_lower = message.lower()
+        is_excluded = any(phrase in message_lower for phrase in exclude_phrases)
+        
+        # Check if message contains any document-related keywords
+        is_document_related = any(keyword in message_lower for keyword in document_keywords)
+        
+        # Only log document-related messages that are not excluded
+        if is_document_related and not is_excluded:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            formatted_message = f"[{timestamp}] {message}"
+            self.console_output.append(formatted_message)
+            # Auto-scroll to bottom
+            self.console_output.verticalScrollBar().setValue(
+                self.console_output.verticalScrollBar().maximum()
+            )
+    
+    def log_document_action(self, action_type: str, details: str = ""):
+        """Log specific document actions with standardized formatting."""
+        action_messages = {
+            "document_added": f"Dokument hinzugefügt{f': {details}' if details else ''}",
+            "document_removed": f"Dokument entfernt{f': {details}' if details else ''}",
+            "page_deleted": f"Seite {details} gelöscht" if details else "Seite gelöscht",
+            "page_extracted": f"Seite {details} extrahiert" if details else "Seite extrahiert",
+            "pages_merged": f"Dokumente zusammengeführt{f': {details}' if details else ''}",
+            "pdf_split": f"PDF aufgeteilt{f': {details}' if details else ''}",
+            "password_set": f"PDF-Passwort gesetzt{f': {details}' if details else ''}",
+            "password_removed": f"PDF-Passwort entfernt{f': {details}' if details else ''}",
+            "file_converted": f"Datei konvertiert{f': {details}' if details else ''}",
+            "file_saved": f"Datei gespeichert{f': {details}' if details else ''}"
+        }
+        
+        message = action_messages.get(action_type, f"{action_type}: {details}")
+        self.log_message(message)
 
     def add_to_recent_files(self, file_paths: list):
         if not isinstance(file_paths, list):
-            print(f"add_to_recent_files expects a list, got {type(file_paths)}")
+            self.log_message(f"Fehler: add_to_recent_files erwartet eine Liste, bekam aber {type(file_paths)}")
             return
 
         for file_path in file_paths:
-            if not isinstance(file_path, str) or not os.path.exists(file_path): # Added os.path.exists check
-                print(f"Invalid or non-existent file path in recent files list: {file_path}")
+            if not isinstance(file_path, str) or not os.path.exists(file_path):
+                self.log_message(f"Ungültiger oder nicht existierender Dateipfad in der Liste der zuletzt verwendeten Dateien: {file_path}")
                 continue
             
-            # Normalize path to avoid near-duplicates (e.g. / vs \)
             normalized_path = os.path.normpath(file_path)
 
             if normalized_path in self.recent_files:
                 self.recent_files.remove(normalized_path)
-            # Add to the left (most recent)
             self.recent_files.appendleft(normalized_path)
         
-        # Update the explorer widget
-        if hasattr(self, 'file_explorer') and self.file_explorer is not None:
-            self.file_explorer.set_recent_files(list(self.recent_files))
-        print(f"Recent files updated: {list(self.recent_files)}")
+        if hasattr(self, 'recent_files_widget') and self.recent_files_widget is not None:
+            self.recent_files_widget.update_recent_files(list(self.recent_files))
+        self.log_message(f"Liste der zuletzt verwendeten Dateien aktualisiert: {list(self.recent_files)}")
 
     def changeEvent(self, event):
         super().changeEvent(event)

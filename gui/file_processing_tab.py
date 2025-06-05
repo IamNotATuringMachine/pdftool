@@ -41,6 +41,11 @@ from utils.constants import (
     ODF_PRESENTATION_EXTENSIONS # Added
 )
 
+# Import function widgets for type checking in _handle_unified_action
+# from gui.pdf_password_widget import PDFPasswordWidget # Removed
+from gui.pdf_advanced_operations_widget import PDFAdvancedOperationsWidget # New import
+# PDFEditWidget could be imported if it had a similar action method
+
 # ModifyPagesTab wird nicht mehr hier importiert, da sie ins Werkzeuge-Menü verlegt wurde
 
 # Conditional imports for Windows-specific COM libraries and converters
@@ -71,6 +76,7 @@ else:
 
 class FileProcessingTab(QWidget): # Renamed class
     files_processed_for_recent_list = Signal(list) # Signal to emit for recently used files
+    file_selected_for_function_widgets = Signal(str) # Signal to emit when a file is selected for function widgets
 
     def __init__(self, app_root=None):
         super().__init__()
@@ -93,16 +99,25 @@ class FileProcessingTab(QWidget): # Renamed class
         self._log_dependency_status()
         # --- End Dependency Status ---
 
+    def _log_to_console(self, message):
+        """Helper function to log messages to console instead of status label"""
+        if hasattr(self.app_root, 'log_message'):
+            self.app_root.log_message(message)
+
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(5)
         self.setLayout(main_layout)
 
-        # Entferne den Titel "Dateien zur Verarbeitung" und erstelle eine einfache GroupBox
-        controls_group = QGroupBox() # Kein Titel mehr
-        controls_group_layout = QHBoxLayout(controls_group)
+        # Use a QWidget instead of a QGroupBox to avoid extra padding/margins
+        controls_container = QWidget()
+        controls_container_layout = QHBoxLayout(controls_container)
+        controls_container_layout.setContentsMargins(0, 0, 0, 0) # Remove layout margins
 
         # Erstelle eine vertikale Layout für die Dateiliste mit Hinweistext
         file_area_layout = QVBoxLayout()
+        file_area_layout.setContentsMargins(0, 0, 0, 0) # Remove layout margins
         
         # Hinweistext mit anklickbarem "Datei hinzufügen"
         hint_layout = QHBoxLayout()
@@ -110,10 +125,30 @@ class FileProcessingTab(QWidget): # Renamed class
         hint_label = QLabel("Sie können")
         hint_layout.addWidget(hint_label)
         
-        # Anklickbarer Link für "Datei hinzufügen" - Farbe wird durch Theme bestimmt
-        self.add_file_link = QLabel('<a href="#" style="color: gray; text-decoration: underline;">Dateien hinzufügen</a>')
-        self.add_file_link.linkActivated.connect(self._add_files_to_process_list)
-        self.add_file_link.setOpenExternalLinks(False)
+        # Anklickbarer Link für "Datei hinzufügen" - als QPushButton gestylt wie ein Link
+        self.add_file_link = QPushButton("Dateien hinzufügen")
+        self.add_file_link.clicked.connect(self._add_files_to_process_list)
+        self.add_file_link.setFlat(True)  # Removes button appearance
+        self.add_file_link.setCursor(Qt.CursorShape.PointingHandCursor)  # Hand cursor like a link
+        # Style it to look like a link without underline
+        self.add_file_link.setStyleSheet("""
+            QPushButton {
+                border: none;
+                background: transparent;
+                color: gray;
+                text-decoration: none;
+                font: inherit;
+                padding: 0px;
+                margin: 0px;
+            }
+            QPushButton:hover {
+                color: gray;
+                text-decoration: none;
+            }
+            QPushButton:pressed {
+                color: darkgray;
+            }
+        """)
         hint_layout.addWidget(self.add_file_link)
         
         hint_label2 = QLabel("oder per Drag & Drop Dateien zur Verarbeitung hinzufügen.")
@@ -136,35 +171,17 @@ class FileProcessingTab(QWidget): # Renamed class
         self.file_list_widget.setWordWrap(True)
         # self.file_list_widget.itemSelectionChanged.connect(self._on_list_selection_changed) # If needed later
         self.file_list_widget.itemDoubleClicked.connect(self._on_file_item_double_clicked) # Open file on double click
+        self.file_list_widget.itemSelectionChanged.connect(self._on_file_selection_changed) # Notify function widgets
 
         file_area_layout.addWidget(self.file_list_widget, 1)
-        controls_group_layout.addLayout(file_area_layout, 1)
+        controls_container_layout.addLayout(file_area_layout, 1)
 
-        # Werkzeuge-Buttons anstatt "Dateien hinzufügen" Button
-        tools_layout = QVBoxLayout()
-        tools_label = QLabel("Werkzeuge:")
-        tools_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
-        tools_layout.addWidget(tools_label)
-        
-        # PDF Passwort setzen/entfernen
-        self.password_tool_button = QPushButton("PDF Passwort\nsetzen/entfernen")
-        self.password_tool_button.clicked.connect(self._show_password_dialog)
-        tools_layout.addWidget(self.password_tool_button)
-        
-        # Einzelne PDF bearbeiten
-        self.edit_pdf_button = QPushButton("Einzelne PDF\nbearbeiten")
-        self.edit_pdf_button.clicked.connect(self._show_edit_pdf_dialog)
-        tools_layout.addWidget(self.edit_pdf_button)
-        
-        # PDF Seiten löschen/extrahieren
-        self.pages_tool_button = QPushButton("PDF Seiten\nlöschen/extrahieren")
-        self.pages_tool_button.clicked.connect(self._show_delete_pages_dialog)
-        tools_layout.addWidget(self.pages_tool_button)
-        
-        tools_layout.addStretch()
-        controls_group_layout.addLayout(tools_layout)
-        main_layout.addWidget(controls_group)
+        main_layout.addWidget(controls_container)
 
+        # Adjust vertical stretch factors to make file_list_widget area taller
+        # and action buttons area shorter, while removing the bottom spacer.
+        main_layout.setStretch(0, 5) # Main content area gets more space
+        
         options_frame = QFrame()
         options_layout = QHBoxLayout(options_frame)
         options_layout.setContentsMargins(0,0,0,0)
@@ -173,6 +190,7 @@ class FileProcessingTab(QWidget): # Renamed class
         options_layout.addWidget(self.single_pdf_output_check)
         options_layout.addStretch()
         main_layout.addWidget(options_frame)
+        main_layout.setStretch(1, 0) # Options frame takes minimal space
 
         action_layout = QVBoxLayout()
         self.unified_action_button = QPushButton("Speichern / Aktion ausführen") # Renamed and text changed
@@ -180,8 +198,21 @@ class FileProcessingTab(QWidget): # Renamed class
         action_layout.addWidget(self.unified_action_button)
         self.processing_status_label = QLabel("") 
         self.processing_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        action_layout.addWidget(self.processing_status_label)
+        self.processing_status_label.hide()  # Hide the status label completely
+        # action_layout.addWidget(self.processing_status_label)  # Don't add to layout
         main_layout.addLayout(action_layout)
+        main_layout.setStretch(2, 0) # Action layout takes minimal space
+
+        # Adjust vertical stretch factors to make file_list_widget area shorter
+        # controls_container (index 0) gets 2 parts of the flexible space
+        # main_layout.setStretch(0, 2)
+        # options_frame (index 1) takes its preferred height (non-stretchy)
+        # main_layout.setStretch(1, 0)
+        # action_layout (added as item at index 2) takes its preferred height (default stretch 0)
+        # Add a bottom spacer that takes 1 part of the flexible space
+        # bottom_spacer = QWidget()
+        # main_layout.addWidget(bottom_spacer)
+        # main_layout.setStretch(main_layout.count() - 1, 1) # Spacer gets 1 part
 
         # ModifyPagesTab ist jetzt im Werkzeuge-Menü verfügbar, nicht mehr hier
 
@@ -214,7 +245,8 @@ class FileProcessingTab(QWidget): # Renamed class
                     pass
             
             self._refresh_list_widget_items()
-            self.processing_status_label.setText(f"{len(files_to_remove)} Datei(en) entfernt.")
+            if hasattr(self.app_root, 'log_message'):
+                self.app_root.log_message(f"{len(files_to_remove)} Datei(en) entfernt.")
 
     def _on_file_item_double_clicked(self, item):
         widget = self.file_list_widget.itemWidget(item)
@@ -223,13 +255,26 @@ class FileProcessingTab(QWidget): # Renamed class
             if file_path and os.path.exists(file_path):
                 try:
                     os.startfile(file_path)
-                    self.processing_status_label.setText(f"'{os.path.basename(file_path)}' geöffnet.")
+                    self._log_to_console(f"'{os.path.basename(file_path)}' geöffnet.")
                 except Exception as e:
-                    self.processing_status_label.setText(f"Fehler beim Öffnen von '{os.path.basename(file_path)}': {e}")
+                    self._log_to_console(f"Fehler beim Öffnen von '{os.path.basename(file_path)}': {e}")
                     QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' konnte nicht geöffnet werden.\\nFehler: {e}")
             else:
-                self.processing_status_label.setText(f"Datei nicht gefunden: {file_path}")
+                self._log_to_console(f"Datei nicht gefunden: {file_path}")
                 QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' wurde nicht gefunden oder ist nicht mehr verfügbar.")
+
+    def _on_file_selection_changed(self):
+        """Handle file selection change and emit signal for function widgets"""
+        selected_items = self.file_list_widget.selectedItems()
+        if selected_items:
+            # Get the first selected item
+            item = selected_items[0]
+            widget = self.file_list_widget.itemWidget(item)
+            if widget and hasattr(widget, 'file_path'):
+                file_path = widget.file_path
+                if file_path and os.path.exists(file_path) and file_path.lower().endswith('.pdf'):
+                    # Only emit for PDF files
+                    self.file_selected_for_function_widgets.emit(file_path)
 
     def eventFilter(self, watched, event):
         if watched == self.file_list_widget:
@@ -241,7 +286,10 @@ class FileProcessingTab(QWidget): # Renamed class
                         return True # Event handled
             
             if event.type() == QEvent.DragEnter:
+                print(f"DEBUG: DragEnter event detected")
+                # Debug messages removed from console
                 if event.mimeData().hasUrls(): # External file drag
+                    print(f"DEBUG: Has URLs: {[url.toLocalFile() for url in event.mimeData().urls()]}")
                     is_supported_external = False
                     for url in event.mimeData().urls():
                         file_path = url.toLocalFile()
@@ -250,16 +298,20 @@ class FileProcessingTab(QWidget): # Renamed class
                             is_supported_external = True
                             break
                     if is_supported_external:
+                        print("DEBUG: Accepting drag")
                         event.acceptProposedAction()
                     else:
+                        print("DEBUG: Ignoring drag - no supported files")
                         event.ignore()
                     return True # Event handled by filter
 
                 elif event.source() == self.file_list_widget and \
                      self.file_list_widget.dragDropMode() == QListWidget.DragDropMode.InternalMove:
+                    print("DEBUG: Internal drag accepted")
                     event.acceptProposedAction() # Accept internal drag
                     return True # Event handled by filter
                 else:
+                    print("DEBUG: Drag ignored - other source")
                     event.ignore()
                     return True
 
@@ -278,16 +330,21 @@ class FileProcessingTab(QWidget): # Renamed class
                     return True
             
             elif event.type() == QEvent.Drop:
+                print(f"DEBUG: Drop event detected")
                 if event.mimeData().hasUrls(): # External file drop
                     file_paths = [url.toLocalFile() for url in event.mimeData().urls()]
                     supported_files = [fp for fp in file_paths if os.path.splitext(fp.lower())[1] in ALL_SUPPORTED_EXT_PATTERNS_LIST]
+                    print(f"DEBUG: Dropped files: {file_paths}")
+                    print(f"DEBUG: Supported files: {supported_files}")
                     
                     if supported_files:
                         self._add_files_to_gui_list(supported_files)
                         event.acceptProposedAction()
+                        print("DEBUG: Drop accepted and files added")
                     else:
                         QMessageBox.information(self, "Keine unterstützten Dateien", "Keine der abgelegten Dateien hat einen unterstützten Dateityp.")
                         event.ignore()
+                        print("DEBUG: Drop ignored - no supported files")
                     return True # External drop handled by filter
 
                 # For internal moves (or other drops QListWidget should handle itself):
@@ -318,11 +375,30 @@ class FileProcessingTab(QWidget): # Renamed class
         else:
             link_color = "gray"   # Gray for light mode
         
-        self.add_file_link.setText(f'<a href="#" style="color: {link_color}; text-decoration: underline;">Dateien hinzufügen</a>')
+        # Update QPushButton styling to match theme
+        self.add_file_link.setStyleSheet(f"""
+            QPushButton {{
+                border: none;
+                background: transparent;
+                color: {link_color};
+                text-decoration: none;
+                font: inherit;
+                padding: 0px;
+                margin: 0px;
+            }}
+            QPushButton:hover {{
+                color: {link_color};
+                text-decoration: none;
+            }}
+            QPushButton:pressed {{
+                color: {"lightgray" if theme == "dark" else "darkgray"};
+            }}
+        """)
 
     def _on_rows_moved(self, parent, start, end, destination, row):
         self._update_internal_file_list_from_widget()
-        self.processing_status_label.setText("Dateireihenfolge geändert.")
+        if hasattr(self.app_root, 'log_message'):
+            self.app_root.log_message("Dateireihenfolge geändert.")
 
     def _update_internal_file_list_from_widget(self):
         self.selected_files_for_processing.clear()
@@ -376,24 +452,29 @@ class FileProcessingTab(QWidget): # Renamed class
         filename_label.setWordWrap(True)
         layout.addWidget(filename_label, 1)
         
-        # Nach oben Pfeil
-        up_button = QPushButton("↑")
+        # Nach oben Pfeil - klareres Symbol
+        up_button = QPushButton("▲")
         up_button.setMaximumSize(30, 25)
         up_button.setEnabled(index > 0)
+        up_button.setToolTip("Nach oben verschieben")
+        up_button.setStyleSheet("QPushButton { font-weight: bold; font-size: 12px; }")
         up_button.clicked.connect(lambda: self._move_file_up(file_path))
         layout.addWidget(up_button)
         
-        # Nach unten Pfeil
-        down_button = QPushButton("↓")
+        # Nach unten Pfeil - klareres Symbol
+        down_button = QPushButton("▼")
         down_button.setMaximumSize(30, 25)
         down_button.setEnabled(index < len(self.selected_files_for_processing) - 1)
+        down_button.setToolTip("Nach unten verschieben")
+        down_button.setStyleSheet("QPushButton { font-weight: bold; font-size: 12px; }")
         down_button.clicked.connect(lambda: self._move_file_down(file_path))
         layout.addWidget(down_button)
         
-        # Delete Button
-        delete_button = QPushButton("×")
+        # Delete Button - klareres Symbol
+        delete_button = QPushButton("✖")
         delete_button.setMaximumSize(30, 25)
-        delete_button.setStyleSheet("QPushButton { color: red; font-weight: bold; }")
+        delete_button.setStyleSheet("QPushButton { color: red; font-weight: bold; font-size: 12px; }")
+        delete_button.setToolTip("Datei entfernen")
         delete_button.clicked.connect(lambda: self._remove_single_file(file_path))
         layout.addWidget(delete_button)
         
@@ -411,7 +492,8 @@ class FileProcessingTab(QWidget): # Renamed class
                 self.selected_files_for_processing[current_idx], self.selected_files_for_processing[current_idx - 1] = \
                     self.selected_files_for_processing[current_idx - 1], self.selected_files_for_processing[current_idx]
                 self._refresh_list_widget_items()
-                self.processing_status_label.setText(f"'{os.path.basename(file_path)}' nach oben verschoben.")
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message(f"'{os.path.basename(file_path)}' nach oben verschoben.")
         except ValueError:
             pass
     
@@ -424,7 +506,8 @@ class FileProcessingTab(QWidget): # Renamed class
                 self.selected_files_for_processing[current_idx], self.selected_files_for_processing[current_idx + 1] = \
                     self.selected_files_for_processing[current_idx + 1], self.selected_files_for_processing[current_idx]
                 self._refresh_list_widget_items()
-                self.processing_status_label.setText(f"'{os.path.basename(file_path)}' nach unten verschoben.")
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message(f"'{os.path.basename(file_path)}' nach unten verschoben.")
         except ValueError:
             pass
     
@@ -433,7 +516,10 @@ class FileProcessingTab(QWidget): # Renamed class
         try:
             self.selected_files_for_processing.remove(file_path)
             self._refresh_list_widget_items()
-            self.processing_status_label.setText(f"'{os.path.basename(file_path)}' entfernt.")
+            filename = os.path.basename(file_path)
+            # Log the action
+            if hasattr(self.app_root, 'log_message'):
+                self.app_root.log_message(f"Datei aus Liste entfernt: {filename}")
         except ValueError:
             pass
 
@@ -463,32 +549,41 @@ class FileProcessingTab(QWidget): # Renamed class
         for file_path in file_paths:
             processed_any_paths = True
             if not os.path.exists(file_path):
-                print(f"Datei {file_path} nicht gefunden.")
-                # Optionally: self.processing_status_label.setText(f"Datei nicht gefunden: {os.path.basename(file_path)}")
+                filename = os.path.basename(file_path)
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message(f"Fehler: Datei nicht gefunden: {filename}")
                 continue
             
             _, ext = os.path.splitext(file_path.lower())
             if ext not in ALL_SUPPORTED_EXT_PATTERNS_LIST:
-                print(f"Nicht unterstützter Dateityp: {file_path}")
-                # Optionally: self.processing_status_label.setText(f"Typ nicht unterstützt: {os.path.basename(file_path)}")
-                # QMessageBox.warning(self, "Nicht unterstützter Typ", ...)
+                filename = os.path.basename(file_path)
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message(f"Datei übersprungen (nicht unterstützter Typ): {filename}")
                 continue # Skip unsupported files
 
             if file_path not in self.selected_files_for_processing:
                 self.selected_files_for_processing.append(file_path)
                 added_to_processing_list_paths.append(file_path)
             else:
-                print(f"File {file_path} is already in the processing list.")
+                filename = os.path.basename(file_path)
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message(f"Datei bereits in Liste: {filename}")
         
         if added_to_processing_list_paths: # If any new unique files were added to the data model
             self._refresh_list_widget_items() # Rebuilds QListWidget from self.selected_files_for_processing
             self.files_processed_for_recent_list.emit(added_to_processing_list_paths) 
-            self.processing_status_label.setText(f"{len(added_to_processing_list_paths)} Datei(en) hinzugefügt.")
+            # Log the successful addition
+            if hasattr(self.app_root, 'log_message'):
+                file_count = len(added_to_processing_list_paths)
+                self.app_root.log_message(f"{file_count} Datei(en) hinzugefügt.")
+                self.app_root.log_message(f"{file_count} neue Datei(en) zur Verarbeitung hinzugefügt")
         elif processed_any_paths: # Files were provided, but none were new to selected_files_for_processing
-            self.processing_status_label.setText("Ausgewählte Datei(en) bereits in der Liste oder nicht unterstützt.")
-        # If no file_paths were given or all were invalid before checks, label remains unchanged or handled by individual checks
+            self._log_to_console("Ausgewählte Datei(en) bereits in der Liste oder nicht unterstützt.")
 
     def _add_files_to_process_list(self): # Renamed method
+        if hasattr(self.app_root, 'log_message'):
+            self.app_root.log_message("Datei-Dialog geöffnet")
+        
         # FILETYPES_FOR_DIALOG is now correctly configured due to constants.py change
         dialog_filter = " ;; ".join([f"{ftype_desc} ({' '.join(['*'+ext for ext in exts.split()])})" for ftype_desc, exts in FILETYPES_FOR_DIALOG if exts]) # Ensure exts is not empty
         # Ensure "Alle unterstützten Dateien" entry is correctly formatted
@@ -507,7 +602,7 @@ class FileProcessingTab(QWidget): # Renamed class
     def _remove_file_from_process_list(self): # Renamed method
         selected_items = self.file_list_widget.selectedItems()
         if not selected_items:
-            self.processing_status_label.setText("Keine Dateien zum Entfernen ausgewählt.")
+            self._log_to_console("Keine Dateien zum Entfernen ausgewählt.")
             return
 
         removed_count = 0
@@ -536,9 +631,10 @@ class FileProcessingTab(QWidget): # Renamed class
 
         if removed_count > 0:
             file_s = "Datei" if removed_count == 1 else "Dateien"
-            self.processing_status_label.setText(f"{removed_count} {file_s} aus der Liste entfernt.")
+            if hasattr(self.app_root, 'log_message'):
+                self.app_root.log_message(f"{removed_count} {file_s} aus der Liste entfernt.")
         else:
-            self.processing_status_label.setText("Keine Dateien entfernt (möglicherweise bereits entfernt oder Fehler).")
+            self._log_to_console("Keine Dateien entfernt (möglicherweise bereits entfernt oder Fehler).")
 
     def _move_item_in_list(self, direction): # Renamed from _move_item
         selected_items = self.file_list_widget.selectedItems()
@@ -563,7 +659,8 @@ class FileProcessingTab(QWidget): # Renamed class
                     self.file_list_widget.scrollToItem(self.file_list_widget.item(i))
                     break
             direction_text = "nach oben" if direction == -1 else "nach unten"
-            self.processing_status_label.setText(f"Datei {direction_text} verschoben.")
+            if hasattr(self.app_root, 'log_message'):
+                self.app_root.log_message(f"Datei {direction_text} verschoben.")
 
     def _move_process_item_up(self): # Renamed method
         self._move_item_in_list(-1)
@@ -572,13 +669,30 @@ class FileProcessingTab(QWidget): # Renamed class
         self._move_item_in_list(1)
 
     def _handle_unified_action(self):
-        # Da ModifyPagesTab ins Werkzeuge-Menü verlegt wurde, führen wir nur noch die normale Dateiverarbeitung durch
-        self._execute_processing()
+        """Handles the action from the main button, routing to either processing or a function widget action"""
+        action_handled_by_function_widget = False
+        if hasattr(self.app_root, 'function_container') and self.app_root.function_container.isVisible():
+            current_widget = self.app_root.function_stack.currentWidget()
+            
+            if isinstance(current_widget, PDFAdvancedOperationsWidget):
+                self.app_root.log_message("Aktion wird durch PDF Anpassen & Passwort-Widget ausgeführt...")
+                if hasattr(current_widget, 'public_perform_action_and_save'):
+                    current_widget.public_perform_action_and_save()
+                elif hasattr(current_widget, 'is_ready_for_action') and current_widget.is_ready_for_action():
+                    # Fallback for older structure, if public_perform_action_and_save isn't there
+                    current_widget.public_perform_action_and_save()
+                else:
+                    self.app_root.log_message("PDF Anpassen & Passwort-Widget ist nicht bereit (fehlende Datei oder Seitenangabe).")
+                action_handled_by_function_widget = True
+        
+        if not action_handled_by_function_widget:
+            self.app_root.log_message("Aktion wird durch allgemeine Dateiverarbeitung ausgeführt...")
+            self._execute_processing()
 
     def _execute_processing(self): # Renamed method
-        if self.file_list_widget.count() == 0:
+        if not self.selected_files_for_processing:
             QMessageBox.information(self, "Keine Dateien", "Bitte fügen Sie zuerst Dateien zur Liste hinzu.")
-            self.processing_status_label.setText("Keine Dateien für Verarbeitung.")
+            self._log_to_console("Keine Dateien für Verarbeitung.")
             return
 
         files_to_process = []
@@ -591,14 +705,20 @@ class FileProcessingTab(QWidget): # Renamed class
         if not files_to_process:
             QMessageBox.information(self, "Keine gültigen Dateien", 
                                     "Die Liste enthält keine Elemente mit gültigen Dateipfaden.")
-            self.processing_status_label.setText("Keine gültigen Dateien für Verarbeitung.")
+            self._log_to_console("Keine gültigen Dateien für Verarbeitung.")
             return
+
+        # Log the start of processing
+        if hasattr(self.app_root, 'log_message'):
+            file_count = len(files_to_process)
+            output_type = "zu einer PDF zusammengeführt" if self.single_pdf_output_check.isChecked() else "zu separaten PDFs konvertiert"
+            self.app_root.log_message(f"Verarbeitung gestartet: {file_count} Datei(en) werden {output_type}")
 
         # Use a copy for processing to avoid issues if the list is modified elsewhere during processing
         # This was how it was done with self.selected_files_for_processing[:]
         # files_to_process is already a new list here.
 
-        self.processing_status_label.setText("Verarbeite Dateien...")
+        self._log_to_console("Verarbeite Dateien...")
         QApplication.processEvents() # Update UI
 
         output_directory = ""
@@ -610,7 +730,9 @@ class FileProcessingTab(QWidget): # Renamed class
                 os.path.dirname(files_to_process[0]) if files_to_process else ""
             )
             if not output_directory:
-                self.processing_status_label.setText("Verarbeitung abgebrochen. Kein Ausgabeverzeichnis gewählt.")
+                self._log_to_console("Verarbeitung abgebrochen. Kein Ausgabeverzeichnis gewählt.")
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message("Verarbeitung abgebrochen: Kein Ausgabeverzeichnis gewählt")
                 return
 
         try:
@@ -626,7 +748,7 @@ class FileProcessingTab(QWidget): # Renamed class
                 self._process_files_to_separate_pdfs(files_to_process, output_directory)
             
             # Status messages are set within the _process_files... methods
-            # self.processing_status_label.setText("Dateiverarbeitung abgeschlossen.") 
+            # self._log_to_console("Dateiverarbeitung abgeschlossen.") 
             # QMessageBox.information(self, "Erfolg", "Dateiverarbeitung erfolgreich abgeschlossen.")
 
         except Exception as e:
@@ -634,21 +756,21 @@ class FileProcessingTab(QWidget): # Renamed class
             self._show_detailed_error("Verarbeitungsfehler", 
                                       f"Ein Fehler ist während der Dateiverarbeitung aufgetreten: {e}",
                                       detailed_info=detailed_error)
-            self.processing_status_label.setText(f"Fehler bei Dateiverarbeitung: {e}")
+            self._log_to_console(f"Fehler bei Dateiverarbeitung: {e}")
 
     def _process_files_to_single_pdf(self, files_to_process):
         if not files_to_process:
-            self.processing_status_label.setText("Keine Dateien zum Verarbeiten ausgewählt.")
+            self._log_to_console("Keine Dateien zum Verarbeiten ausgewählt.")
             return
 
         output_pdf_path, _ = QFileDialog.getSaveFileName(self, "Einzelne PDF speichern unter...",
                                                          os.path.join(os.getcwd(), "kombinierte_datei.pdf"),
                                                          "PDF-Dateien (*.pdf)")
         if not output_pdf_path:
-            self.processing_status_label.setText("Speichervorgang abgebrochen.")
+            self._log_to_console("Speichervorgang abgebrochen.")
             return
 
-        self.processing_status_label.setText("Verarbeite Dateien zu einer einzelnen PDF...")
+        self._log_to_console("Verarbeite Dateien zu einer einzelnen PDF...")
         QApplication.processEvents()
 
         output_pdf_writer = PdfWriter()
@@ -658,7 +780,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
         for i, file_path in enumerate(files_to_process):
             current_file_basename = os.path.basename(file_path)
-            self.processing_status_label.setText(f"Verarbeite Datei {i+1}/{len(files_to_process)}: {current_file_basename}")
+            self._log_to_console(f"Verarbeite Datei {i+1}/{len(files_to_process)}: {current_file_basename}")
             QApplication.processEvents()
             _, ext = os.path.splitext(file_path)
             ext = ext.lower()
@@ -671,7 +793,7 @@ class FileProcessingTab(QWidget): # Renamed class
                     pdf_reader = PdfReader(file_path)
                     for page in pdf_reader.pages:
                         output_pdf_writer.add_page(page)
-                    self.processing_status_label.setText(f"PDF '{current_file_basename}' hinzugefügt.")
+                    self._log_to_console(f"PDF '{current_file_basename}' hinzugefügt.")
                     file_processed_successfully = True
                 elif ext in IMAGE_EXTENSIONS:
                     img_pdf_bytes = io.BytesIO()
@@ -731,7 +853,7 @@ class FileProcessingTab(QWidget): # Renamed class
                     temp_office_pdf_fd, temp_office_pdf_path = tempfile.mkstemp(suffix=".pdf")
                     os.close(temp_office_pdf_fd)
                     temp_pdf_for_conversion = temp_office_pdf_path
-                    self.processing_status_label.setText(f"Konvertiere {current_file_basename} zu PDF...")
+                    self._log_to_console(f"Konvertiere {current_file_basename} zu PDF...")
                     QApplication.processEvents()
                     if self._convert_office_to_pdf_native(file_path, temp_office_pdf_path):
                         if os.path.exists(temp_office_pdf_path) and os.path.getsize(temp_office_pdf_path) > 0:
@@ -739,17 +861,17 @@ class FileProcessingTab(QWidget): # Renamed class
                                 office_pdf_reader = PdfReader(temp_office_pdf_path)
                                 for page in office_pdf_reader.pages:
                                     output_pdf_writer.add_page(page)
-                                self.processing_status_label.setText(f"{current_file_basename} zu PDF hinzugefügt.")
+                                self._log_to_console(f"{current_file_basename} zu PDF hinzugefügt.")
                                 file_processed_successfully = True
                             except Exception as e:
                                 error_msg = f"Fehler beim Lesen der konvertierten PDF für {current_file_basename}: {e}"
-                                self.processing_status_label.setText(error_msg)
+                                self._log_to_console(error_msg)
                                 print(f"Error reading converted PDF {temp_office_pdf_path}: {e}")
                         else:
-                             self.processing_status_label.setText(f"Konvertierte PDF für {current_file_basename} ist leer oder nicht vorhanden.")
+                             self._log_to_console(f"Konvertierte PDF für {current_file_basename} ist leer oder nicht vorhanden.")
                     # If _convert_office_to_pdf_native returned False, status label is already set by it.
                 else:
-                    self.processing_status_label.setText(f"Dateityp {ext} von '{current_file_basename}' wird nicht unterstützt.")
+                    self._log_to_console(f"Dateityp {ext} von '{current_file_basename}' wird nicht unterstützt.")
 
                 if file_processed_successfully:
                     num_successful += 1
@@ -761,7 +883,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
             except Exception as e:
                 error_msg = f"Fehler bei Datei '{current_file_basename}': {e}"
-                self.processing_status_label.setText(error_msg)
+                self._log_to_console(error_msg)
                 print(f"Error processing file {file_path}: {e}")
                 num_errors += 1
                 if not first_error_detail:
@@ -783,6 +905,13 @@ class FileProcessingTab(QWidget): # Renamed class
                 if first_error_detail:
                     final_message += f"\n\nDetails zum ersten Fehler:\n{first_error_detail}"
                 
+                # Log the completion
+                if hasattr(self.app_root, 'log_message'):
+                    if num_errors == 0:
+                        self.app_root.log_message(f"Verarbeitung erfolgreich abgeschlossen: {num_successful} Datei(en) zu einer PDF zusammengeführt")
+                    else:
+                        self.app_root.log_message(f"Verarbeitung abgeschlossen mit Fehlern: {num_successful} erfolgreich, {num_errors} Fehler")
+                
                 if num_errors > 0:
                     # Show detailed error information
                     detailed_info = f"Erfolgreich verarbeitet: {num_successful}\nFehler: {num_errors}\n\n"
@@ -801,6 +930,9 @@ class FileProcessingTab(QWidget): # Renamed class
                 error_detail = f"Fehler beim Speichern der PDF: {e}\n\n"
                 error_detail += f"Ausgabepfad: {output_pdf_path}\n"
                 error_detail += f"Dateigröße der nicht gespeicherten PDF: {len(output_pdf_writer.pages)} Seiten"
+                # Log the error
+                if hasattr(self.app_root, 'log_message'):
+                    self.app_root.log_message(f"FEHLER beim Speichern der PDF: {str(e)}")
                 self._show_detailed_error("Speicherfehler", f"Fehler beim Speichern der PDF: {e}", error_detail)
         elif num_errors > 0 and num_successful == 0:
             final_message = f"Keine Dateien konnten verarbeitet werden. {num_errors} Fehler aufgetreten."
@@ -815,14 +947,14 @@ class FileProcessingTab(QWidget): # Renamed class
         else:
             QMessageBox.information(self, "Nichts zu speichern", "Keine Inhalte zum Speichern in der PDF vorhanden.")
         
-        self.processing_status_label.setText("Bereit.")
+        self._log_to_console("Bereit.")
 
     def _process_files_to_separate_pdfs(self, files_to_process, output_directory):
         if not files_to_process:
-            self.processing_status_label.setText("Keine Dateien zum Verarbeiten ausgewählt.")
+            self._log_to_console("Keine Dateien zum Verarbeiten ausgewählt.")
             return
 
-        self.processing_status_label.setText("Verarbeite Dateien zu separaten PDFs...")
+        self._log_to_console("Verarbeite Dateien zu separaten PDFs...")
         QApplication.processEvents()
 
         num_successful = 0
@@ -832,7 +964,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
         for i, file_path in enumerate(files_to_process):
             current_file_basename = os.path.basename(file_path)
-            self.processing_status_label.setText(f"Verarbeite Datei {i+1}/{len(files_to_process)}: {current_file_basename}")
+            self._log_to_console(f"Verarbeite Datei {i+1}/{len(files_to_process)}: {current_file_basename}")
             QApplication.processEvents()
             
             base, ext = os.path.splitext(current_file_basename)
@@ -845,7 +977,7 @@ class FileProcessingTab(QWidget): # Renamed class
             try:
                 if ext == ".pdf":
                     shutil.copy2(file_path, final_output_pdf_path)
-                    self.processing_status_label.setText(f"PDF '{current_file_basename}' kopiert.")
+                    self._log_to_console(f"PDF '{current_file_basename}' kopiert.")
                     conversion_successful_flag = True
                 elif ext in IMAGE_EXTENSIONS:
                     pdf_canvas = canvas.Canvas(final_output_pdf_path, pagesize=A4)
@@ -872,17 +1004,17 @@ class FileProcessingTab(QWidget): # Renamed class
                         conversion_successful_flag = True
                 elif ext in (MS_WORD_EXTENSIONS + MS_EXCEL_EXTENSIONS + MS_POWERPOINT_EXTENSIONS +
                              ODF_TEXT_EXTENSIONS + ODF_SPREADSHEET_EXTENSIONS + ODF_PRESENTATION_EXTENSIONS):
-                    self.processing_status_label.setText(f"Konvertiere {current_file_basename} zu PDF...")
+                    self._log_to_console(f"Konvertiere {current_file_basename} zu PDF...")
                     QApplication.processEvents()
                     if self._convert_office_to_pdf_native(file_path, final_output_pdf_path):
                         if os.path.exists(final_output_pdf_path) and os.path.getsize(final_output_pdf_path) > 0:
-                             self.processing_status_label.setText(f"{current_file_basename} erfolgreich als PDF gespeichert.")
+                             self._log_to_console(f"{current_file_basename} erfolgreich als PDF gespeichert.")
                              conversion_successful_flag = True
                         else:
-                            self.processing_status_label.setText(f"Konvertierte PDF für {current_file_basename} ist leer oder nicht vorhanden (separat).")
+                            self._log_to_console(f"Konvertierte PDF für {current_file_basename} ist leer oder nicht vorhanden (separat).")
                     # If _convert_office_to_pdf_native returned False, status label is already set by it.
                 else:
-                    self.processing_status_label.setText(f"Dateityp {ext} von '{current_file_basename}' wird nicht unterstützt.")
+                    self._log_to_console(f"Dateityp {ext} von '{current_file_basename}' wird nicht unterstützt.")
 
                 if conversion_successful_flag:
                     num_successful += 1
@@ -899,7 +1031,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
             except Exception as e:
                 error_msg = f"Fehler bei Datei '{current_file_basename}': {e}"
-                self.processing_status_label.setText(error_msg)
+                self._log_to_console(error_msg)
                 print(f"Error processing file {file_path} for separate PDF: {e}")
                 num_errors += 1
                 if not first_error_detail:
@@ -915,6 +1047,13 @@ class FileProcessingTab(QWidget): # Renamed class
             final_message += f" {num_errors} Datei(en) konnten nicht verarbeitet werden."
         if first_error_detail:
              final_message += f"\n\nDetails zum ersten Fehler:\n{first_error_detail}"
+        
+        # Log the completion
+        if hasattr(self.app_root, 'log_message'):
+            if num_errors == 0:
+                self.app_root.log_message(f"Verarbeitung erfolgreich abgeschlossen: {num_successful} separate PDF(s) erstellt")
+            else:
+                self.app_root.log_message(f"Verarbeitung abgeschlossen mit Fehlern: {num_successful} erfolgreich, {num_errors} Fehler")
         
         reply = QMessageBox.information(self, "Verarbeitung abgeschlossen", 
                                         final_message + "\\n\\nMöchten Sie den Ausgabeordner öffnen?",
@@ -932,7 +1071,7 @@ class FileProcessingTab(QWidget): # Renamed class
             except Exception as e:
                 QMessageBox.warning(self, "Ordner öffnen Fehler", f"Der Ordner '{output_directory}' konnte nicht geöffnet werden.\\nFehler: {e}")
 
-        self.processing_status_label.setText("Bereit.")
+        self._log_to_console("Bereit.")
 
     # --- Conversion Helper Methods (largely unchanged from ConvertTab, ensure they use 'canvas' (c) correctly) ---
     # Make sure _convert_html_to_pdf_file is defined or adapt usage
@@ -1125,12 +1264,12 @@ class FileProcessingTab(QWidget): # Renamed class
                 
                 drawing.drawOn(pdf_canvas, x_offset, y_offset)
                 pdf_canvas.showPage()
-                self.processing_status_label.setText(f"SVG '{os.path.basename(file_path)}' zu PDF hinzugefügt.")
+                self._log_to_console(f"SVG '{os.path.basename(file_path)}' zu PDF hinzugefügt.")
                 return True # Indicate success
             else:
-                self.processing_status_label.setText(f"Fehler beim Parsen von SVG '{os.path.basename(file_path)}'.")
+                self._log_to_console(f"Fehler beim Parsen von SVG '{os.path.basename(file_path)}'.")
         except Exception as e:
-            self.processing_status_label.setText(f"Fehler beim Konvertieren von SVG '{os.path.basename(file_path)}': {e}")
+            self._log_to_console(f"Fehler beim Konvertieren von SVG '{os.path.basename(file_path)}': {e}")
         return False # Indicate failure
 
     def _is_msoffice_app_available(self, app_name):
@@ -1230,29 +1369,29 @@ class FileProcessingTab(QWidget): # Renamed class
                     print(f"COM initialized with CoInitializeEx for {input_basename}")
                 except Exception as e2:
                     print(f"Failed to CoInitializeEx: {e2}")
-                    self.processing_status_label.setText(f"COM Initialization failed for {input_basename}: {e2}")
+                    self._log_to_console(f"COM Initialization failed for {input_basename}: {e2}")
                     # Proceed without COM, relying on LibreOffice or if converters don't need explicit init
         
         try:
             # 1. MS Word (.doc, .docx)
             if ext in MS_WORD_EXTENSIONS:
                 if self.msword_available and convert_docx_to_pdf and win32com: # win32com check for safety
-                    self.processing_status_label.setText(f"Versuche {input_basename} mit MS Word zu konvertieren...")
+                    self._log_to_console(f"Versuche {input_basename} mit MS Word zu konvertieren...")
                     QApplication.processEvents()
                     try:
                         print(f"Attempting MS Word conversion: {input_path} -> {output_pdf_path}")
                         convert_docx_to_pdf(os.path.abspath(input_path), os.path.abspath(output_pdf_path))
                         if os.path.exists(output_pdf_path) and os.path.getsize(output_pdf_path) > 0:
-                            self.processing_status_label.setText(f"{input_basename} erfolgreich mit MS Word konvertiert.")
+                            self._log_to_console(f"{input_basename} erfolgreich mit MS Word konvertiert.")
                             print(f"MS Word conversion successful for {input_basename}")
                             return True
                         else:
                             error_msg = f"MS Word Konvertierung von {input_basename} fehlgeschlagen (Datei nicht erstellt oder leer)."
-                            self.processing_status_label.setText(error_msg)
+                            self._log_to_console(error_msg)
                             print(f"MS Word conversion failed: {error_msg}")
                     except Exception as e:
                         error_msg = f"MS Word Konvertierungsfehler für {input_basename}: {e}"
-                        self.processing_status_label.setText(error_msg)
+                        self._log_to_console(error_msg)
                         print(f"MS Word conversion error for {input_path}: {e}")
                     # Fall through to LibreOffice if MS Word conversion fails
                 else:
@@ -1261,7 +1400,7 @@ class FileProcessingTab(QWidget): # Renamed class
             # 2. MS PowerPoint (.ppt, .pptx)
             elif ext in MS_POWERPOINT_EXTENSIONS:
                 if self.mspowerpoint_available and pptxtopdf_convert_bulk and win32com:
-                    self.processing_status_label.setText(f"Versuche {input_basename} mit MS PowerPoint zu konvertieren...")
+                    self._log_to_console(f"Versuche {input_basename} mit MS PowerPoint zu konvertieren...")
                     QApplication.processEvents()
                     temp_dir_powerpoint = tempfile.TemporaryDirectory()
                     try:
@@ -1274,16 +1413,16 @@ class FileProcessingTab(QWidget): # Renamed class
 
                         if os.path.exists(converted_pdf_in_temp) and os.path.getsize(converted_pdf_in_temp) > 0:
                             shutil.move(converted_pdf_in_temp, os.path.abspath(output_pdf_path))
-                            self.processing_status_label.setText(f"{input_basename} erfolgreich mit MS PowerPoint konvertiert.")
+                            self._log_to_console(f"{input_basename} erfolgreich mit MS PowerPoint konvertiert.")
                             print(f"MS PowerPoint conversion successful for {input_basename}")
                             return True
                         else:
                             error_msg = f"MS PowerPoint Konvertierung fehlgeschlagen für {input_basename} (Datei nicht erstellt oder leer)."
-                            self.processing_status_label.setText(error_msg)
+                            self._log_to_console(error_msg)
                             print(f"MS PowerPoint conversion failed: {error_msg}")
                     except Exception as e:
                         error_msg = f"MS PowerPoint Konvertierungsfehler für {input_basename}: {e}"
-                        self.processing_status_label.setText(error_msg)
+                        self._log_to_console(error_msg)
                         print(f"MS PowerPoint conversion error for {input_path}: {e}")
                     finally:
                         temp_dir_powerpoint.cleanup()
@@ -1294,7 +1433,7 @@ class FileProcessingTab(QWidget): # Renamed class
             # 3. MS Excel (.xls, .xlsx)
             elif ext in MS_EXCEL_EXTENSIONS:
                 if self.msexcel_available and win32com:
-                    self.processing_status_label.setText(f"Versuche {input_basename} mit MS Excel zu konvertieren...")
+                    self._log_to_console(f"Versuche {input_basename} mit MS Excel zu konvertieren...")
                     QApplication.processEvents()
                     excel_app = None
                     try:
@@ -1307,16 +1446,16 @@ class FileProcessingTab(QWidget): # Renamed class
                         workbook.Close(SaveChanges=False)
                         
                         if os.path.exists(output_pdf_path) and os.path.getsize(output_pdf_path) > 0:
-                            self.processing_status_label.setText(f"{input_basename} erfolgreich mit MS Excel konvertiert.")
+                            self._log_to_console(f"{input_basename} erfolgreich mit MS Excel konvertiert.")
                             print(f"MS Excel conversion successful for {input_basename}")
                             return True
                         else:
                             error_msg = f"MS Excel Konvertierung fehlgeschlagen für {input_basename} (Datei nicht erstellt oder leer)."
-                            self.processing_status_label.setText(error_msg)
+                            self._log_to_console(error_msg)
                             print(f"MS Excel conversion failed: {error_msg}") 
                     except Exception as e:
                         error_msg = f"MS Excel Konvertierungsfehler für {input_basename}: {e}"
-                        self.processing_status_label.setText(error_msg)
+                        self._log_to_console(error_msg)
                         print(f"MS Excel conversion error for {input_path}: {e}")
                     finally:
                         if excel_app:
@@ -1332,7 +1471,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
             # 4. LibreOffice (ODF formats and fallback for MS Office)
             if self.soffice_path:
-                self.processing_status_label.setText(f"Versuche {input_basename} mit LibreOffice zu konvertieren...")
+                self._log_to_console(f"Versuche {input_basename} mit LibreOffice zu konvertieren...")
                 QApplication.processEvents()
                 print(f"Attempting LibreOffice conversion using: {self.soffice_path}")
                 # LibreOffice --convert-to pdf saves the file in --outdir with the original name + .pdf
@@ -1356,27 +1495,27 @@ class FileProcessingTab(QWidget): # Renamed class
 
                     if os.path.exists(converted_pdf_in_temp) and os.path.getsize(converted_pdf_in_temp) > 0:
                         shutil.move(converted_pdf_in_temp, os.path.abspath(output_pdf_path))
-                        self.processing_status_label.setText(f"{input_basename} erfolgreich mit LibreOffice konvertiert.")
+                        self._log_to_console(f"{input_basename} erfolgreich mit LibreOffice konvertiert.")
                         print(f"LibreOffice conversion successful for {input_basename}")
                         return True
                     else:
                         err_msg = process.stderr if process.stderr else "Unbekannter Fehler (Zieldatei nicht gefunden oder leer)."
                         error_detail = f"LibreOffice Konvertierung von {input_basename} fehlgeschlagen: {err_msg}"
-                        self.processing_status_label.setText(error_detail)
+                        self._log_to_console(error_detail)
                         print(f"LibreOffice conversion failed for {input_path}. stderr: {process.stderr}, stdout: {process.stdout}")
                         print(f"Files in temp directory: {os.listdir(temp_dir_libreoffice.name) if os.path.exists(temp_dir_libreoffice.name) else 'Directory not found'}")
                         
                 except subprocess.CalledProcessError as e:
                     error_detail = f"LibreOffice Prozessfehler bei {input_basename}: {e.stderr if e.stderr else 'Unbekannter Fehler'}"
-                    self.processing_status_label.setText(error_detail)
+                    self._log_to_console(error_detail)
                     print(f"LibreOffice CalledProcessError for {input_path}: stderr: {e.stderr}, stdout: {e.stdout}, returncode: {e.returncode}")
                 except subprocess.TimeoutExpired:
                     error_detail = f"LibreOffice Konvertierung von {input_basename} Zeitüberschreitung (>120s)."
-                    self.processing_status_label.setText(error_detail)
+                    self._log_to_console(error_detail)
                     print(f"LibreOffice TimeoutExpired for {input_path}")
                 except Exception as e:
                     error_detail = f"Allgemeiner LibreOffice Fehler bei {input_basename}: {e}"
-                    self.processing_status_label.setText(error_detail)
+                    self._log_to_console(error_detail)
                     print(f"LibreOffice general error for {input_path}: {e}")
                 finally:
                     temp_dir_libreoffice.cleanup()
@@ -1384,22 +1523,22 @@ class FileProcessingTab(QWidget): # Renamed class
                 if ext in MS_WORD_EXTENSIONS or ext in MS_EXCEL_EXTENSIONS or ext in MS_POWERPOINT_EXTENSIONS:
                     # This message is shown if MS Office conversion was not available or failed, and LibreOffice is also not found.
                     error_detail = f"Kein MS Office oder LibreOffice für {input_basename} gefunden. Installieren Sie LibreOffice oder MS Office."
-                    self.processing_status_label.setText(error_detail)
+                    self._log_to_console(error_detail)
                     print(f"No converters available for MS Office file: {input_basename}")
                 elif ext in ODF_TEXT_EXTENSIONS or ext in ODF_SPREADSHEET_EXTENSIONS or ext in ODF_PRESENTATION_EXTENSIONS:
                     error_detail = f"LibreOffice nicht gefunden für ODF-Datei {input_basename}. Installieren Sie LibreOffice."
-                    self.processing_status_label.setText(error_detail)
+                    self._log_to_console(error_detail)
                     print(f"LibreOffice not found for ODF file: {input_basename}")
                 # If it's not an office file type this function shouldn't have been called.
                 # However, if it was, this is a generic message.
                 else:
                     error_detail = f"Kein geeigneter Konverter für {input_basename} gefunden."
-                    self.processing_status_label.setText(error_detail)
+                    self._log_to_console(error_detail)
                     print(f"No suitable converter found for file: {input_basename}")
 
             # If we reach here, all conversion attempts failed
             final_error = f"Konvertierung von {input_basename} fehlgeschlagen. Überprüfen Sie die Installation von MS Office/LibreOffice."
-            self.processing_status_label.setText(final_error)
+            self._log_to_console(final_error)
             print(f"All conversion attempts failed for: {input_basename}")
             return False
 
@@ -1489,7 +1628,7 @@ class FileProcessingTab(QWidget): # Renamed class
     def add_single_file_from_path(self, file_path: str):
         if not file_path or not os.path.isfile(file_path):
             print(f"Ungültiger Dateipfad von Explorer erhalten: {file_path}")
-            self.processing_status_label.setText(f"Ungültiger Pfad: {os.path.basename(file_path if file_path else "N/A")}")
+            self._log_to_console(f"Ungültiger Pfad: {os.path.basename(file_path if file_path else "N/A")}")
             return
 
         _, ext = os.path.splitext(file_path.lower())
@@ -1498,7 +1637,7 @@ class FileProcessingTab(QWidget): # Renamed class
         if ext not in ALL_SUPPORTED_EXT_PATTERNS_LIST:
             QMessageBox.warning(self, "Nicht unterstützter Dateityp", 
                                 f"Die Datei '{os.path.basename(file_path)}' vom Explorer hat einen nicht unterstützten Dateityp ({ext}).")
-            self.processing_status_label.setText(f"Explorer: Typ nicht unterstützt: {os.path.basename(file_path)}")
+            self._log_to_console(f"Explorer: Typ nicht unterstützt: {os.path.basename(file_path)}")
             return
 
         # Use the existing logic to add to GUI list and internal tracking
@@ -1531,6 +1670,8 @@ class FileProcessingTab(QWidget): # Renamed class
         layout.addWidget(modify_widget)
         
         dialog.exec()
+
+
 
 # For basic testing if run directly (optional)
 if __name__ == '__main__':
