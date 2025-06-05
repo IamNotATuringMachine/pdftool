@@ -41,7 +41,7 @@ from utils.constants import (
     ODF_PRESENTATION_EXTENSIONS # Added
 )
 
-from gui.modify_pages_tab import ModifyPagesTab # Added import
+# ModifyPagesTab wird nicht mehr hier importiert, da sie ins Werkzeuge-Menü verlegt wurde
 
 # Conditional imports for Windows-specific COM libraries and converters
 if os.name == 'nt':
@@ -74,6 +74,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
     def __init__(self, app_root=None):
         super().__init__()
+        self.setObjectName("FileProcessingTab") # For CSS styling
         self.app_root = app_root
         self.selected_files_for_processing = [] # Renamed variable
         self.preview_size = QSize(64, 64)
@@ -96,8 +97,30 @@ class FileProcessingTab(QWidget): # Renamed class
         main_layout = QVBoxLayout(self)
         self.setLayout(main_layout)
 
-        controls_group = QGroupBox("Dateien zur Verarbeitung (Konvertieren & Zusammenführen)") # Updated title
+        # Entferne den Titel "Dateien zur Verarbeitung" und erstelle eine einfache GroupBox
+        controls_group = QGroupBox() # Kein Titel mehr
         controls_group_layout = QHBoxLayout(controls_group)
+
+        # Erstelle eine vertikale Layout für die Dateiliste mit Hinweistext
+        file_area_layout = QVBoxLayout()
+        
+        # Hinweistext mit anklickbarem "Datei hinzufügen"
+        hint_layout = QHBoxLayout()
+        hint_layout.setSpacing(2)  # Reduzierter Abstand zwischen den Widgets
+        hint_label = QLabel("Sie können")
+        hint_layout.addWidget(hint_label)
+        
+        # Anklickbarer Link für "Datei hinzufügen" - Farbe wird durch Theme bestimmt
+        self.add_file_link = QLabel('<a href="#" style="color: gray; text-decoration: underline;">Dateien hinzufügen</a>')
+        self.add_file_link.linkActivated.connect(self._add_files_to_process_list)
+        self.add_file_link.setOpenExternalLinks(False)
+        hint_layout.addWidget(self.add_file_link)
+        
+        hint_label2 = QLabel("oder per Drag & Drop Dateien zur Verarbeitung hinzufügen.")
+        hint_layout.addWidget(hint_label2)
+        hint_layout.addStretch()
+        
+        file_area_layout.addLayout(hint_layout)
 
         self.file_list_widget = QListWidget()
         self.file_list_widget.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
@@ -114,23 +137,32 @@ class FileProcessingTab(QWidget): # Renamed class
         # self.file_list_widget.itemSelectionChanged.connect(self._on_list_selection_changed) # If needed later
         self.file_list_widget.itemDoubleClicked.connect(self._on_file_item_double_clicked) # Open file on double click
 
-        controls_group_layout.addWidget(self.file_list_widget, 1)
+        file_area_layout.addWidget(self.file_list_widget, 1)
+        controls_group_layout.addLayout(file_area_layout, 1)
 
-        buttons_layout = QVBoxLayout()
-        self.add_button = QPushButton("Dateien hinzufügen")
-        self.add_button.clicked.connect(self._add_files_to_process_list) 
-        buttons_layout.addWidget(self.add_button)
-        self.remove_button = QPushButton("Auswahl entfernen")
-        self.remove_button.clicked.connect(self._remove_file_from_process_list)
-        buttons_layout.addWidget(self.remove_button)
-        self.move_up_button = QPushButton("Nach oben")
-        self.move_up_button.clicked.connect(self._move_process_item_up) 
-        buttons_layout.addWidget(self.move_up_button)
-        self.move_down_button = QPushButton("Nach unten")
-        self.move_down_button.clicked.connect(self._move_process_item_down)
-        buttons_layout.addWidget(self.move_down_button)
-        buttons_layout.addStretch()
-        controls_group_layout.addLayout(buttons_layout)
+        # Werkzeuge-Buttons anstatt "Dateien hinzufügen" Button
+        tools_layout = QVBoxLayout()
+        tools_label = QLabel("Werkzeuge:")
+        tools_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        tools_layout.addWidget(tools_label)
+        
+        # PDF Passwort setzen/entfernen
+        self.password_tool_button = QPushButton("PDF Passwort\nsetzen/entfernen")
+        self.password_tool_button.clicked.connect(self._show_password_dialog)
+        tools_layout.addWidget(self.password_tool_button)
+        
+        # Einzelne PDF bearbeiten
+        self.edit_pdf_button = QPushButton("Einzelne PDF\nbearbeiten")
+        self.edit_pdf_button.clicked.connect(self._show_edit_pdf_dialog)
+        tools_layout.addWidget(self.edit_pdf_button)
+        
+        # PDF Seiten löschen/extrahieren
+        self.pages_tool_button = QPushButton("PDF Seiten\nlöschen/extrahieren")
+        self.pages_tool_button.clicked.connect(self._show_delete_pages_dialog)
+        tools_layout.addWidget(self.pages_tool_button)
+        
+        tools_layout.addStretch()
+        controls_group_layout.addLayout(tools_layout)
         main_layout.addWidget(controls_group)
 
         options_frame = QFrame()
@@ -151,19 +183,14 @@ class FileProcessingTab(QWidget): # Renamed class
         action_layout.addWidget(self.processing_status_label)
         main_layout.addLayout(action_layout)
 
-        # --- Add ModifyPagesTab section ---
-        modify_pages_group = QGroupBox("Einzelnes PDF bearbeiten (Seiten löschen/extrahieren)")
-        modify_pages_layout = QVBoxLayout(modify_pages_group)
-        self.modify_pages_widget = ModifyPagesTab(app_root=self.app_root) # Instantiate ModifyPagesTab
-        modify_pages_layout.addWidget(self.modify_pages_widget)
-        main_layout.addWidget(modify_pages_group)
-        # --- End ModifyPagesTab section ---
+        # ModifyPagesTab ist jetzt im Werkzeuge-Menü verfügbar, nicht mehr hier
 
     def _prompt_and_remove_selected_files_on_key_press(self):
-        if not self.file_list_widget.selectedItems():
+        selected_items = self.file_list_widget.selectedItems()
+        if not selected_items:
             return
 
-        num_selected = len(self.file_list_widget.selectedItems())
+        num_selected = len(selected_items)
         file_s = "Datei" if num_selected == 1 else "Dateien"
         message = f"Möchten Sie die ausgewählte(n) {num_selected} {file_s} wirklich aus der Liste entfernen?"
         
@@ -172,20 +199,37 @@ class FileProcessingTab(QWidget): # Renamed class
                                     QMessageBox.StandardButton.No)
 
         if reply == QMessageBox.StandardButton.Yes:
-            self._remove_file_from_process_list()
+            # Sammle die file_paths der ausgewählten Items
+            files_to_remove = []
+            for item in selected_items:
+                widget = self.file_list_widget.itemWidget(item)
+                if widget and hasattr(widget, 'file_path'):
+                    files_to_remove.append(widget.file_path)
+            
+            # Entferne die Dateien aus der Liste
+            for file_path in files_to_remove:
+                try:
+                    self.selected_files_for_processing.remove(file_path)
+                except ValueError:
+                    pass
+            
+            self._refresh_list_widget_items()
+            self.processing_status_label.setText(f"{len(files_to_remove)} Datei(en) entfernt.")
 
     def _on_file_item_double_clicked(self, item):
-        file_path = item.data(Qt.ItemDataRole.UserRole)
-        if file_path and os.path.exists(file_path):
-            try:
-                os.startfile(file_path)
-                self.processing_status_label.setText(f"'{os.path.basename(file_path)}' geöffnet.")
-            except Exception as e:
-                self.processing_status_label.setText(f"Fehler beim Öffnen von '{os.path.basename(file_path)}': {e}")
-                QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' konnte nicht geöffnet werden.\\nFehler: {e}")
-        else:
-            self.processing_status_label.setText(f"Datei nicht gefunden: {file_path}")
-            QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' wurde nicht gefunden oder ist nicht mehr verfügbar.")
+        widget = self.file_list_widget.itemWidget(item)
+        if widget and hasattr(widget, 'file_path'):
+            file_path = widget.file_path
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.startfile(file_path)
+                    self.processing_status_label.setText(f"'{os.path.basename(file_path)}' geöffnet.")
+                except Exception as e:
+                    self.processing_status_label.setText(f"Fehler beim Öffnen von '{os.path.basename(file_path)}': {e}")
+                    QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' konnte nicht geöffnet werden.\\nFehler: {e}")
+            else:
+                self.processing_status_label.setText(f"Datei nicht gefunden: {file_path}")
+                QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' wurde nicht gefunden oder ist nicht mehr verfügbar.")
 
     def eventFilter(self, watched, event):
         if watched == self.file_list_widget:
@@ -267,6 +311,15 @@ class FileProcessingTab(QWidget): # Renamed class
         self.file_list_widget.setWordWrap(mode != "list")
         self._refresh_list_widget_items()
 
+    def update_theme(self, theme):
+        """Update the link color based on the current theme"""
+        if theme == "dark":
+            link_color = "white"  # White for dark mode
+        else:
+            link_color = "gray"   # Gray for light mode
+        
+        self.add_file_link.setText(f'<a href="#" style="color: {link_color}; text-decoration: underline;">Dateien hinzufügen</a>')
+
     def _on_rows_moved(self, parent, start, end, destination, row):
         self._update_internal_file_list_from_widget()
         self.processing_status_label.setText("Dateireihenfolge geändert.")
@@ -275,24 +328,115 @@ class FileProcessingTab(QWidget): # Renamed class
         self.selected_files_for_processing.clear()
         for i in range(self.file_list_widget.count()):
             item = self.file_list_widget.item(i)
-            self.selected_files_for_processing.append(item.data(Qt.ItemDataRole.UserRole))
+            widget = self.file_list_widget.itemWidget(item)
+            if widget and hasattr(widget, 'file_path'):
+                self.selected_files_for_processing.append(widget.file_path)
 
     def _refresh_list_widget_items(self):
         # Store the paths of currently selected items
         selected_paths = set()
-        for item in self.file_list_widget.selectedItems():
-            selected_paths.add(item.data(Qt.ItemDataRole.UserRole))
+        for i in range(self.file_list_widget.count()):
+            item = self.file_list_widget.item(i)
+            widget = self.file_list_widget.itemWidget(item)
+            if widget and hasattr(widget, 'file_path') and item.isSelected():
+                selected_paths.add(widget.file_path)
 
         self.file_list_widget.clear()
-        for file_path in self.selected_files_for_processing:
-            item = QListWidgetItem(os.path.basename(file_path))
-            item.setData(Qt.ItemDataRole.UserRole, file_path)
-            item.setIcon(self._get_q_icon_for_file(file_path))
+        for index, file_path in enumerate(self.selected_files_for_processing):
+            item = QListWidgetItem()
+            
+            # Erstelle Custom Widget für dieses Listenelement
+            item_widget = self._create_file_item_widget(file_path, index)
+            
+            # Setze die Größe des Items basierend auf dem Widget
+            item.setSizeHint(item_widget.sizeHint())
+            
             self.file_list_widget.addItem(item)
+            self.file_list_widget.setItemWidget(item, item_widget)
+            
             # Restore selection if this item was previously selected
             if file_path in selected_paths:
                 item.setSelected(True)
     
+    def _create_file_item_widget(self, file_path, index):
+        """Erstellt ein Custom Widget für ein Datei-Listenelement mit Delete-Button und Pfeilsymbolen"""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(5, 2, 5, 2)
+        
+        # Datei-Icon
+        icon_label = QLabel()
+        icon = self._get_q_icon_for_file(file_path)
+        pixmap = icon.pixmap(24, 24)
+        icon_label.setPixmap(pixmap)
+        layout.addWidget(icon_label)
+        
+        # Dateiname
+        filename_label = QLabel(os.path.basename(file_path))
+        filename_label.setWordWrap(True)
+        layout.addWidget(filename_label, 1)
+        
+        # Nach oben Pfeil
+        up_button = QPushButton("↑")
+        up_button.setMaximumSize(30, 25)
+        up_button.setEnabled(index > 0)
+        up_button.clicked.connect(lambda: self._move_file_up(file_path))
+        layout.addWidget(up_button)
+        
+        # Nach unten Pfeil
+        down_button = QPushButton("↓")
+        down_button.setMaximumSize(30, 25)
+        down_button.setEnabled(index < len(self.selected_files_for_processing) - 1)
+        down_button.clicked.connect(lambda: self._move_file_down(file_path))
+        layout.addWidget(down_button)
+        
+        # Delete Button
+        delete_button = QPushButton("×")
+        delete_button.setMaximumSize(30, 25)
+        delete_button.setStyleSheet("QPushButton { color: red; font-weight: bold; }")
+        delete_button.clicked.connect(lambda: self._remove_single_file(file_path))
+        layout.addWidget(delete_button)
+        
+        # Speichere file_path als Attribut für spätere Referenz
+        widget.file_path = file_path
+        
+        return widget
+    
+    def _move_file_up(self, file_path):
+        """Verschiebt eine Datei nach oben in der Liste"""
+        try:
+            current_idx = self.selected_files_for_processing.index(file_path)
+            if current_idx > 0:
+                # Tausche mit dem Element darüber
+                self.selected_files_for_processing[current_idx], self.selected_files_for_processing[current_idx - 1] = \
+                    self.selected_files_for_processing[current_idx - 1], self.selected_files_for_processing[current_idx]
+                self._refresh_list_widget_items()
+                self.processing_status_label.setText(f"'{os.path.basename(file_path)}' nach oben verschoben.")
+        except ValueError:
+            pass
+    
+    def _move_file_down(self, file_path):
+        """Verschiebt eine Datei nach unten in der Liste"""
+        try:
+            current_idx = self.selected_files_for_processing.index(file_path)
+            if current_idx < len(self.selected_files_for_processing) - 1:
+                # Tausche mit dem Element darunter
+                self.selected_files_for_processing[current_idx], self.selected_files_for_processing[current_idx + 1] = \
+                    self.selected_files_for_processing[current_idx + 1], self.selected_files_for_processing[current_idx]
+                self._refresh_list_widget_items()
+                self.processing_status_label.setText(f"'{os.path.basename(file_path)}' nach unten verschoben.")
+        except ValueError:
+            pass
+    
+    def _remove_single_file(self, file_path):
+        """Entfernt eine einzelne Datei aus der Liste"""
+        try:
+            self.selected_files_for_processing.remove(file_path)
+            self._refresh_list_widget_items()
+            self.processing_status_label.setText(f"'{os.path.basename(file_path)}' entfernt.")
+        except ValueError:
+            pass
+
     def _get_q_icon_for_file(self, file_path):
         # Ensure this method correctly handles file_path to provide an icon
         # This is used by _refresh_list_widget_items
@@ -428,57 +572,8 @@ class FileProcessingTab(QWidget): # Renamed class
         self._move_item_in_list(1)
 
     def _handle_unified_action(self):
-        pages_specified_in_modify_tab = self.modify_pages_widget.has_pages_to_modify()
-
-        if pages_specified_in_modify_tab:
-            # User wants to modify pages. A single PDF must be selected from the list.
-            selected_list_items = self.file_list_widget.selectedItems()
-            
-            if len(selected_list_items) == 1:
-                item_data = selected_list_items[0].data(Qt.ItemDataRole.UserRole)
-                # Ensure item_data is a string path before calling .lower()
-                if item_data and isinstance(item_data, str) and item_data.lower().endswith(".pdf"):
-                    # Correct selection for page modification.
-                    self.modify_pages_widget.load_pdf(item_data) 
-                    
-                    if self.modify_pages_widget.is_ready_for_action(): # Should be true
-                        self.processing_status_label.setText("Bearbeite Seiten...")
-                        QApplication.processEvents()
-                        success = self.modify_pages_widget.public_perform_action_and_save()
-                        if success:
-                            self.processing_status_label.setText("Seitenbearbeitung erfolgreich abgeschlossen.")
-                            # ModifyPagesTab clears itself on success
-                        else:
-                            self.processing_status_label.setText("Seitenbearbeitung fehlgeschlagen oder abgebrochen.")
-                            # Ensure ModifyPagesTab is reset if its own save/clear failed
-                            self.modify_pages_widget.clear_loaded_pdf()
-                        return # Page modification attempted, stop here.
-                    else:
-                        # This case should be rare if logic is sound (e.g. load_pdf failed silently)
-                        QMessageBox.warning(self, "Fehler bei Seitenbearbeitung", 
-                                            "Konnte PDF nicht für Seitenbearbeitung vorbereiten, obwohl Seiten angegeben und PDF ausgewählt wurde.")
-                        self.processing_status_label.setText("Fehlerhafte Vorbereitung zur Seitenbearbeitung.")
-                        self.modify_pages_widget.clear_loaded_pdf()
-                        return
-                else:
-                    # Single item selected, but not a PDF.
-                    QMessageBox.warning(self, "Ungültige Auswahl für Seitenbearbeitung", 
-                                        "Sie haben Seiten zur Bearbeitung angegeben. Bitte wählen Sie eine einzelne PDF-Datei aus der oberen Liste aus.")
-                    self.processing_status_label.setText("Warten auf korrekte PDF-Auswahl für Seitenbearbeitung.")
-                    self.modify_pages_widget.clear_loaded_pdf() # Clear any previously loaded PDF
-                    return
-            else:
-                # 0 or >1 items selected.
-                QMessageBox.warning(self, "Auswahl für Seitenbearbeitung erforderlich", 
-                                    "Sie haben Seiten zur Bearbeitung angegeben. Bitte wählen Sie genau eine PDF-Datei aus der oberen Liste aus.")
-                self.processing_status_label.setText("Warten auf korrekte PDF-Auswahl für Seitenbearbeitung.")
-                self.modify_pages_widget.clear_loaded_pdf()
-                return
-        else:
-            # No pages specified in ModifyPagesTab. Proceed with file list processing.
-            # Ensure ModifyPagesTab is clean, in case it had a loaded PDF but no pages specified.
-            self.modify_pages_widget.clear_loaded_pdf() 
-            self._execute_processing() # Original method for processing file list
+        # Da ModifyPagesTab ins Werkzeuge-Menü verlegt wurde, führen wir nur noch die normale Dateiverarbeitung durch
+        self._execute_processing()
 
     def _execute_processing(self): # Renamed method
         if self.file_list_widget.count() == 0:
@@ -489,9 +584,9 @@ class FileProcessingTab(QWidget): # Renamed class
         files_to_process = []
         for i in range(self.file_list_widget.count()):
             item = self.file_list_widget.item(i)
-            file_path = item.data(Qt.ItemDataRole.UserRole)
-            if file_path: # Ensure item has a file path
-                files_to_process.append(file_path)
+            widget = self.file_list_widget.itemWidget(item)
+            if widget and hasattr(widget, 'file_path'):
+                files_to_process.append(widget.file_path)
 
         if not files_to_process:
             QMessageBox.information(self, "Keine gültigen Dateien", 
@@ -1408,6 +1503,34 @@ class FileProcessingTab(QWidget): # Renamed class
 
         # Use the existing logic to add to GUI list and internal tracking
         self._add_files_to_gui_list([file_path]) # Pass as a list
+
+    def _show_password_dialog(self):
+        """Show dialog for setting/removing PDF password"""
+        from gui.pdf_password_dialog import PDFPasswordDialog
+        dialog = PDFPasswordDialog(self)
+        dialog.exec()
+
+    def _show_edit_pdf_dialog(self):
+        """Show dialog for editing individual PDF"""
+        from gui.pdf_edit_dialog import PDFEditDialog
+        dialog = PDFEditDialog(self)
+        dialog.exec()
+
+    def _show_delete_pages_dialog(self):
+        """Show dialog for deleting PDF pages"""
+        from gui.modify_pages_tab import ModifyPagesTab
+        from PySide6.QtWidgets import QDialog, QVBoxLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("PDF Seiten löschen/extrahieren")
+        dialog.setModal(True)
+        dialog.resize(600, 400)
+        
+        layout = QVBoxLayout(dialog)
+        modify_widget = ModifyPagesTab(app_root=self.app_root)
+        layout.addWidget(modify_widget)
+        
+        dialog.exec()
 
 # For basic testing if run directly (optional)
 if __name__ == '__main__':

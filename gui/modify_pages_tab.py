@@ -53,11 +53,18 @@ class ModifyPagesTab(QWidget):
         self.controls_group = controls_group # To access it later for setTitle
         controls_layout = QVBoxLayout(controls_group)
 
-        # File Display (replaces selection button)
+        # File Selection
+        file_select_layout = QHBoxLayout()
         self.loaded_pdf_display_label = QLabel("Keine PDF-Datei zum Bearbeiten geladen.")
         self.loaded_pdf_display_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.loaded_pdf_display_label.setWordWrap(True) # In case of long names
-        controls_layout.addWidget(self.loaded_pdf_display_label)
+        file_select_layout.addWidget(self.loaded_pdf_display_label, 1)
+        
+        self.browse_button = QPushButton("PDF auswählen...")
+        self.browse_button.clicked.connect(self._browse_pdf_file)
+        file_select_layout.addWidget(self.browse_button)
+        
+        controls_layout.addLayout(file_select_layout)
 
         # Page Input
         page_input_layout = QHBoxLayout()
@@ -73,9 +80,9 @@ class ModifyPagesTab(QWidget):
 
         # --- Action Area ---
         action_layout = QVBoxLayout()
-        # self.execute_button = QPushButton() # Text will be set dynamically # REMOVED
-        # self.execute_button.clicked.connect(self.public_perform_action_and_save) # REMOVED (formerly _execute_action)
-        # action_layout.addWidget(self.execute_button) # REMOVED
+        self.execute_button = QPushButton() # Text will be set dynamically
+        self.execute_button.clicked.connect(self.public_perform_action_and_save)
+        action_layout.addWidget(self.execute_button)
 
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -121,10 +128,12 @@ class ModifyPagesTab(QWidget):
             self.controls_group.setTitle("PDF auswählen und zu löschende Seiten angeben")
             self.pages_label.setText("Zu löschende Seiten (z.B. 1, 3, 5-7):")
             self.pages_entry.setPlaceholderText("z.B. 1,3,5-7")
+            self.execute_button.setText("Seiten löschen")
         else: # extract mode
             self.controls_group.setTitle("PDF auswählen und Seiten/Bereiche für Extraktion angeben")
             self.pages_label.setText("Zu extrahierende Seiten/Bereiche (z.B. 1-3, 5, 7-9):")
             self.pages_entry.setPlaceholderText("z.B. 1-3, 5, 7-9")
+            self.execute_button.setText("Seiten extrahieren")
         # Clear status on mode change if a file was previously processed
         if self.input_pdf_path: # A file might be loaded
             self.status_label.setText(f"Modus auf '{self.current_mode}' geändert. PDF '{os.path.basename(self.input_pdf_path)}' geladen.")
@@ -242,6 +251,17 @@ class ModifyPagesTab(QWidget):
     def is_ready_for_action(self):
         """Checks if a PDF is loaded and page numbers are entered."""
         return bool(self.input_pdf_path and self.pages_entry.text().strip())
+
+    def _browse_pdf_file(self):
+        """Opens a file dialog to select a PDF file."""
+        pdf_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "PDF-Datei auswählen",
+            "",
+            "PDF-Dateien (*.pdf);;Alle Dateien (*.*)"
+        )
+        if pdf_path:
+            self.load_pdf(pdf_path)
 
 # Basic test structure if run directly (optional)
 if __name__ == '__main__':

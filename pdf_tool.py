@@ -1,10 +1,10 @@
 import sys
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QToolBar, 
-    QLabel, QRadioButton, QMenu, QMenuBar, QSizePolicy, QSplitter # Added QMenu, QMenuBar, QSizePolicy (QToolBar, QLabel, QRadioButton might be removed or repurposed)
+    QLabel, QRadioButton, QMenu, QMenuBar, QSizePolicy, QSplitter, QComboBox, QPushButton, QHBoxLayout, QGraphicsOpacityEffect # Added QComboBox, QPushButton, QHBoxLayout, QGraphicsOpacityEffect
 )
 from PySide6.QtGui import QIcon, QAction, QActionGroup # Added QAction, QActionGroup
-from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer # Added QEvent, QTimer
+from PySide6.QtCore import Qt, Signal, QSize, QEvent, QTimer, QPropertyAnimation, QEasingCurve # Added QEvent, QTimer, QPropertyAnimation, QEasingCurve
 import ctypes
 from ctypes import wintypes
 import collections # Added for deque
@@ -48,6 +48,11 @@ class MainWindow(QMainWindow):
         self.list_view_icon_size = QSize(24, 24)
         self.icon_view_icon_size = QSize(80, 100) # Standard icon view size
         self.current_view_mode = "list" # Default view mode
+        
+        # Initialize fade animation for theme transitions
+        self.fade_animation = None
+        self.is_fading = False
+        self.pending_theme = None
 
         # Set Window Icon
         # Make sure 'Graphicloads-Filetype-Pdf.ico' is in the same directory as pdf_tool.py
@@ -61,6 +66,7 @@ class MainWindow(QMainWindow):
         # self.setCentralWidget(self.tab_widget) # Will set central widget after creating FileProcessingTab
 
         self._create_menus() # Create menus including the View menu
+        self._create_toolbar() # Create toolbar with theme toggle and view mode dropdown
         self._create_main_layout() # Renamed from _create_tabs / _create_main_content_area
 
     def showEvent(self, event):
@@ -73,60 +79,91 @@ class MainWindow(QMainWindow):
             self._set_windows_title_bar_theme()
             self._initial_theme_applied = True
 
+    def _create_toolbar(self):
+        """Create toolbar with theme toggle and view mode dropdown"""
+        self.toolbar = QToolBar("Hauptwerkzeugleiste")
+        self.addToolBar(self.toolbar)
+        
+        # Add spacer to push items to the right
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.toolbar.addWidget(spacer)
+        
+        # View mode toggle button
+        self.view_mode_button = QPushButton()
+        self.view_mode_button.setMinimumWidth(80)  # Fixed width to prevent resizing
+        self._update_view_mode_button_text()
+        self.view_mode_button.clicked.connect(self._toggle_view_mode)
+        self.toolbar.addWidget(self.view_mode_button)
+        
+        # Theme toggle button with light bulb icons  
+        self.theme_button = QPushButton()
+        self.theme_button.setMinimumWidth(60)  # Fixed width to prevent resizing
+        self._update_theme_button_text()
+        self.theme_button.clicked.connect(self._toggle_theme)
+        self.toolbar.addWidget(self.theme_button)
+
+    def _update_theme_button_text(self):
+        """Update the theme button text based on current theme"""
+        if self.current_theme == "dark":
+            self.theme_button.setText("Dark")
+        else:
+            self.theme_button.setText("Light")
+
+    def _toggle_theme(self):
+        """Toggle between dark and light theme with fade effect"""
+        new_theme = "light" if self.current_theme == "dark" else "dark"
+        self._set_theme_with_fade(new_theme)
+
+    def _update_view_mode_button_text(self):
+        """Update the view mode button text based on current view mode"""
+        if self.current_view_mode == "list":
+            self.view_mode_button.setText("Liste")
+        else:
+            self.view_mode_button.setText("Symbole")
+
+    def _toggle_view_mode(self):
+        """Toggle between list and icon view mode"""
+        new_mode = "icon" if self.current_view_mode == "list" else "list"
+        self._set_view_mode(new_mode)
+
     def _create_menus(self):
-        menu_bar = self.menuBar() # Get the main window's menu bar
-        if not menu_bar:
-            menu_bar = QMenuBar(self)
-            self.setMenuBar(menu_bar)
+        # Werkzeuge-Menü entfernt - Funktionen sind in der rechten Seitenleiste verfügbar
+        pass
 
-        # --- Ansicht Menu ---
-        view_menu = menu_bar.addMenu("&Ansicht") # Use & for mnemonic
+    def _show_password_dialog(self):
+        """Show dialog for setting/removing PDF password"""
+        from gui.pdf_password_dialog import PDFPasswordDialog
+        dialog = PDFPasswordDialog(self)
+        dialog.exec()
 
-        # -- View Mode Submenu --
-        self.view_action_group = QActionGroup(self)
-        self.view_action_group.setExclusive(True)
+    def _show_edit_pdf_dialog(self):
+        """Show dialog for editing individual PDF"""
+        from gui.pdf_edit_dialog import PDFEditDialog
+        dialog = PDFEditDialog(self)
+        dialog.exec()
 
-        self.list_view_action = QAction("Liste", self)
-        self.list_view_action.setCheckable(True)
-        self.list_view_action.setChecked(self.current_view_mode == "list")
-        self.list_view_action.triggered.connect(lambda: self._set_view_mode("list"))
-        view_menu.addAction(self.list_view_action)
-        self.view_action_group.addAction(self.list_view_action)
-
-        self.icon_view_action = QAction("Symbole", self)
-        self.icon_view_action.setCheckable(True)
-        self.icon_view_action.setChecked(self.current_view_mode == "icon")
-        self.icon_view_action.triggered.connect(lambda: self._set_view_mode("icon"))
-        view_menu.addAction(self.icon_view_action)
-        self.view_action_group.addAction(self.icon_view_action)
-
-        view_menu.addSeparator()
-
-        # -- Theme Submenu --
-        theme_menu = view_menu.addMenu("Erscheinungsbild")
-        self.theme_action_group = QActionGroup(self)
-        self.theme_action_group.setExclusive(True)
-
-        light_theme_action = QAction("Heller Modus", self)
-        light_theme_action.setCheckable(True)
-        light_theme_action.setChecked(self.current_theme == "light")
-        light_theme_action.triggered.connect(lambda: self._set_theme("light"))
-        theme_menu.addAction(light_theme_action)
-        self.theme_action_group.addAction(light_theme_action)
-
-        dark_theme_action = QAction("Dunkler Modus", self)
-        dark_theme_action.setCheckable(True)
-        dark_theme_action.setChecked(self.current_theme == "dark")
-        dark_theme_action.triggered.connect(lambda: self._set_theme("dark"))
-        theme_menu.addAction(dark_theme_action)
-        self.theme_action_group.addAction(dark_theme_action)
+    def _show_delete_pages_dialog(self):
+        """Show dialog for deleting PDF pages"""
+        from gui.modify_pages_tab import ModifyPagesTab
+        from PySide6.QtWidgets import QDialog, QVBoxLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("PDF Seiten löschen/extrahieren")
+        dialog.setModal(True)
+        dialog.resize(600, 400)
+        
+        layout = QVBoxLayout(dialog)
+        modify_widget = ModifyPagesTab(app_root=self)
+        layout.addWidget(modify_widget)
+        
+        dialog.exec()
 
     def _set_view_mode(self, mode):
         if self.current_view_mode != mode:
             self.current_view_mode = mode
-            # Update checked state of actions (though QActionGroup should handle it visually)
-            self.list_view_action.setChecked(mode == "list")
-            self.icon_view_action.setChecked(mode == "icon")
+            # Update button text
+            self._update_view_mode_button_text()
             self.view_mode_changed.emit(mode)
     
     def _set_windows_title_bar_theme(self):
@@ -227,30 +264,159 @@ class MainWindow(QMainWindow):
                                    custom_colors=custom_dark_colors,
                                    corner_shape="rounded",
                                    additional_qss=main_window_rounded_qss)
+            
+            # Additional button styling for dark mode - same as list color
+            dark_button_style = """
+            QPushButton {
+                background-color: #3F4042;
+                border: 1px solid #555559;
+                border-radius: 4px;
+                padding: 6px 12px;
+                color: #CCCCCC;
+            }
+            QPushButton:hover {
+                background-color: #4A4A4D;
+                border: 1px solid #666669;
+            }
+            QPushButton:pressed {
+                background-color: #353537;
+            }
+            """
+            current_style = self.styleSheet()
+            self.setStyleSheet(current_style + dark_button_style)
+            
             self.setWindowTitle("PDF & Datei Werkzeug - Dunkler Modus")
         else: # Light theme
+            # Additional QSS for light theme with specific white areas - simplified
+            light_theme_qss = main_window_rounded_qss + """
+            /* Force white background for important UI elements */
+            QListWidget {
+                background-color: white !important;
+                border: 1px solid #D0D0D0 !important;
+            }
+            QTreeView {
+                background-color: white !important;
+                border: 1px solid #D0D0D0 !important;
+            }
+            QListView {
+                background-color: white !important;
+                border: 1px solid #D0D0D0 !important;
+            }
+            """
+            
             custom_light_colors = {
-                "primary": "#000000"          # Set primary color (buttons) to black for light mode
+                "primary": "#000000",                    # Set primary color (buttons) to black for light mode
+                "background": "#FFFEF7",                 # Very light beige, almost white background
+                "primary>button.hoverBackground": "#C8C4B4",   # Button hover color
+                "primary>button.activeBackground": "#BCB8A8",  # Button pressed color
+                "input.background": "#FFFFFF"            # Keep input fields white
             }
             qdarktheme.setup_theme(theme="light",
                                    custom_colors=custom_light_colors,
                                    corner_shape="rounded",
-                                   additional_qss=main_window_rounded_qss)
+                                   additional_qss=light_theme_qss)
+            
+            # Additional button styling after theme setup - subtle tone darker
+            button_style = """
+            QPushButton {
+                background-color: #F5F4ED;
+                border: 1px solid #EBEAE3;
+                border-radius: 4px;
+                padding: 6px 12px;
+                color: #333333;
+            }
+            QPushButton:hover {
+                background-color: #F0EFEA;
+                border: 1px solid #E0DFD5;
+            }
+            QPushButton:pressed {
+                background-color: #EBEAE3;
+            }
+            """
+            current_style = self.styleSheet()
+            self.setStyleSheet(current_style + button_style)
+            
             self.setWindowTitle("PDF & Datei Werkzeug - Heller Modus")
         
         # Apply title bar theme immediately without delay
         self._set_windows_title_bar_theme()
+        
+        # Update theme button text
+        self._update_theme_button_text()
+        
+        # Update theme in file processing tab if it exists
+        if hasattr(self, 'file_processing_tab') and self.file_processing_tab is not None:
+            self.file_processing_tab.update_theme(self.current_theme)
+
+    def _set_theme_with_fade(self, theme_name):
+        """Set theme with fade transition effect"""
+        if self.current_theme == theme_name:
+            return
+            
+        if self.is_fading:
+            # If already fading, queue the new theme
+            self.pending_theme = theme_name
+            return
+            
+        self.is_fading = True
+        self.pending_theme = theme_name
+        
+        # Create new fade effect and animation for each transition
+        self.fade_effect = QGraphicsOpacityEffect()
+        self.fade_animation = QPropertyAnimation(self.fade_effect, b"opacity")
+        self.fade_animation.setDuration(300)  # 300ms fade duration
+        self.fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        
+        # Set up fade effect on central widget
+        if self.centralWidget():
+            self.centralWidget().setGraphicsEffect(self.fade_effect)
+            
+        # Connect animation signals
+        self.fade_animation.finished.connect(self._on_fade_finished)
+        
+        # Start fade out
+        self.fade_animation.setStartValue(1.0)
+        self.fade_animation.setEndValue(0.0)
+        self.fade_animation.start()
+    
+    def _on_fade_finished(self):
+        """Handle fade animation completion"""
+        # Disconnect the finished signal to avoid repeated calls
+        if self.fade_animation:
+            self.fade_animation.finished.disconnect()
+        
+        if self.fade_animation and self.fade_animation.endValue() == 0.0:
+            # Fade out completed, apply new theme
+            if self.pending_theme:
+                self.current_theme = self.pending_theme
+                self._apply_theme()
+            
+            # Start fade in
+            self.fade_animation.setStartValue(0.0)
+            self.fade_animation.setEndValue(1.0)
+            self.fade_animation.finished.connect(self._on_fade_in_finished)
+            self.fade_animation.start()
+        
+    def _on_fade_in_finished(self):
+        """Handle fade in completion"""
+        # Disconnect the finished signal
+        if self.fade_animation:
+            self.fade_animation.finished.disconnect()
+        
+        # Remove the graphics effect
+        if self.centralWidget():
+            self.centralWidget().setGraphicsEffect(None)
+        
+        # Clean up
+        self.fade_effect = None
+        self.fade_animation = None
+        self.is_fading = False
+        self.pending_theme = None
 
     def _set_theme(self, theme_name):
         if self.current_theme != theme_name:
             self.current_theme = theme_name
             self._apply_theme()
-            # Update checked state of actions
-            for action in self.theme_action_group.actions():
-                if action.text() == "Heller Modus" and theme_name == "light":
-                    action.setChecked(True)
-                elif action.text() == "Dunkler Modus" and theme_name == "dark":
-                    action.setChecked(True)
 
     def _create_main_layout(self): # Renamed and modified
         self.splitter = QSplitter(Qt.Horizontal, self)
