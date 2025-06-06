@@ -57,6 +57,9 @@ class MainWindow(QMainWindow):
         # Initialize console output
         self.console_output = QTextEdit()
         self.console_output.setReadOnly(True)
+        
+        # Track currently active PDF function button
+        self.active_pdf_function = None
 
         # Set Window Icon
         # Make sure 'Graphicloads-Filetype-Pdf.ico' is in the same directory as pdf_tool.py
@@ -107,24 +110,38 @@ class MainWindow(QMainWindow):
         # self.toolbar.addWidget(self.advanced_ops_button)
         
         self.delete_pages_button = QPushButton("Seiten löschen")
+        self.delete_pages_button.setToolTip("Bestimmte Seiten aus einem PDF-Dokument entfernen")
         self.delete_pages_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("delete"))
         self.toolbar.addWidget(self.delete_pages_button)
 
         self.extract_pages_button = QPushButton("Seiten extrahieren")
+        self.extract_pages_button.setToolTip("Bestimmte Seiten aus einem PDF-Dokument extrahieren und als neues PDF speichern")
         self.extract_pages_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("extract"))
         self.toolbar.addWidget(self.extract_pages_button)
 
         self.split_pdf_button = QPushButton("PDF teilen")
+        self.split_pdf_button.setToolTip("Ein PDF-Dokument in mehrere separate Dateien aufteilen")
         self.split_pdf_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("split"))
         self.toolbar.addWidget(self.split_pdf_button)
 
         self.set_password_button = QPushButton("Passwort setzen")
+        self.set_password_button.setToolTip("Ein Passwort für ein PDF-Dokument festlegen zum Schutz vor unbefugtem Zugriff")
         self.set_password_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("set_pwd"))
         self.toolbar.addWidget(self.set_password_button)
 
         self.remove_password_button = QPushButton("Passwort entfernen")
+        self.remove_password_button.setToolTip("Das Passwort von einem geschützten PDF-Dokument entfernen")
         self.remove_password_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("remove_pwd"))
         self.toolbar.addWidget(self.remove_password_button)
+        
+        # Store PDF function buttons for highlighting
+        self.pdf_function_buttons = {
+            "delete": self.delete_pages_button,
+            "extract": self.extract_pages_button,
+            "split": self.split_pdf_button,
+            "set_pwd": self.set_password_button,
+            "remove_pwd": self.remove_password_button
+        }
 
         # Add spacer to push theme controls to the right
         spacer = QWidget()
@@ -134,6 +151,7 @@ class MainWindow(QMainWindow):
         # View mode toggle button
         self.view_mode_button = QPushButton()
         self.view_mode_button.setMinimumWidth(80)  # Fixed width to prevent resizing
+        self.view_mode_button.setToolTip("Zwischen Listen- und Symbolansicht wechseln")
         self._update_view_mode_button_text()
         self.view_mode_button.clicked.connect(self._toggle_view_mode)
         self.toolbar.addWidget(self.view_mode_button)
@@ -141,9 +159,14 @@ class MainWindow(QMainWindow):
         # Theme toggle button with light bulb icons  
         self.theme_button = QPushButton()
         self.theme_button.setMinimumWidth(60)  # Fixed width to prevent resizing
+        self.theme_button.setToolTip("Zwischen hellem und dunklem Design wechseln")
         self._update_theme_button_text()
         self.theme_button.clicked.connect(self._toggle_theme)
         self.toolbar.addWidget(self.theme_button)
+        
+        # Set tooltip delay and styling
+        self._setup_tooltip_delay()
+        self._setup_tooltip_styling()
 
     def _update_theme_button_text(self):
         """Update the theme button text based on current theme"""
@@ -189,8 +212,75 @@ class MainWindow(QMainWindow):
         self._show_function_widget("advanced_ops") # Use new key for widget_map
 
     def _show_advanced_ops_with_mode(self, mode):
-        self._show_function_widget("advanced_ops")
+        # Clear previous highlighting
+        self._clear_button_highlighting()
+        
+        # Set the new active function and highlight the button
+        self.active_pdf_function = mode
+        self._highlight_active_button(mode)
+        
+        # Check if this is a mode change for animation
+        is_mode_change = (self.function_container.isVisible() and 
+                         hasattr(self, 'current_advanced_mode') and 
+                         self.current_advanced_mode != mode)
+        
+        # Show the widget with mode change information
+        self._show_function_widget("advanced_ops", force_animation=is_mode_change)
+        
+        # Track the current mode
+        self.current_advanced_mode = mode
         self.advanced_ops_widget.set_mode(mode)
+
+    def _highlight_active_button(self, mode):
+        """Highlight the active PDF function button"""
+        if mode in self.pdf_function_buttons:
+            button = self.pdf_function_buttons[mode]
+            # Apply highlighting style that matches the theme with consistent text formatting
+            if self.current_theme == "dark":
+                # Use warmer gray tones that match the dark theme
+                highlight_style = """
+                QPushButton {
+                    background-color: #5A5A5D; 
+                    border: 2px solid #8A8A8D; 
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    font-weight: normal;
+                    color: #FFFFFF;
+                }
+                QPushButton:hover {
+                    background-color: #6A6A6D;
+                    border: 2px solid #9A9A9D;
+                    color: #FFFFFF;
+                }
+                """
+            else:
+                # Use warm beige tones that match the light theme
+                highlight_style = """
+                QPushButton {
+                    background-color: #E8E7DA; 
+                    border: 2px solid #D0CFC2; 
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                    font-weight: normal;
+                    color: #333333;
+                }
+                QPushButton:hover {
+                    background-color: #EEEEE1;
+                    border: 2px solid #DAD9CC;
+                }
+                """
+            button.setStyleSheet(highlight_style)
+
+    def _clear_button_highlighting(self):
+        """Clear highlighting from all PDF function buttons"""
+        for button in self.pdf_function_buttons.values():
+            button.setStyleSheet("")  # Reset to default style
+        self.active_pdf_function = None
+
+    def _update_button_highlighting_theme(self):
+        """Update button highlighting colors when theme changes"""
+        if self.active_pdf_function:
+            self._highlight_active_button(self.active_pdf_function)
 
     def _set_view_mode(self, mode):
         if self.current_view_mode != mode:
@@ -317,18 +407,19 @@ class MainWindow(QMainWindow):
                                    corner_shape="rounded",
                                    additional_qss=main_window_rounded_qss)
             
-            # Additional button styling for dark mode - same as list color
+            # Additional button styling for dark mode - same as list color with white text
             dark_button_style = """
             QPushButton {
                 background-color: #3F4042;
                 border: 1px solid #555559;
                 border-radius: 4px;
                 padding: 6px 12px;
-                color: #CCCCCC;
+                color: #FFFFFF;
             }
             QPushButton:hover {
                 background-color: #4A4A4D;
                 border: 1px solid #666669;
+                color: #FFFFFF;
             }
             QPushButton:pressed {
                 background-color: #353537;
@@ -337,7 +428,7 @@ class MainWindow(QMainWindow):
             current_style = self.styleSheet()
             self.setStyleSheet(current_style + dark_button_style)
             
-            self.setWindowTitle("PDF & Datei Werkzeug - Dunkler Modus")
+            self.setWindowTitle("PDF Tool - Dunkler Modus")
         else: # Light theme
             # Additional QSS for light theme with specific white areas - simplified
             light_theme_qss = main_window_rounded_qss + """
@@ -388,13 +479,19 @@ class MainWindow(QMainWindow):
             current_style = self.styleSheet()
             self.setStyleSheet(current_style + button_style)
             
-            self.setWindowTitle("PDF & Datei Werkzeug - Heller Modus")
+            self.setWindowTitle("PDF Tool - Heller Modus")
         
         # Apply title bar theme immediately without delay
         self._set_windows_title_bar_theme()
         
         # Update theme button text
         self._update_theme_button_text()
+        
+        # Update button highlighting with new theme colors
+        self._update_button_highlighting_theme()
+        
+        # Reapply tooltip styling to ensure black text in all themes
+        self._apply_tooltip_styling()
         
         # Update theme in file processing tab if it exists
         if hasattr(self, 'file_processing_tab') and self.file_processing_tab is not None:
@@ -598,12 +695,38 @@ class MainWindow(QMainWindow):
         }
         # Ensure no other comments or definitions exist here until the method ends.
 
-    def _show_function_widget(self, widget_name):
-        """Show specific function widget"""
+    def _show_function_widget(self, widget_name, force_animation=False):
+        """Show specific function widget with fade-in animation"""
         if widget_name in self.widget_map: # Corrected: Check in self.widget_map
+            # Track if this is a mode change (different widget) or first opening
+            is_first_opening = not self.function_container.isVisible()
+            is_widget_change = (self.function_container.isVisible() and 
+                              hasattr(self, 'current_widget_name') and 
+                              self.current_widget_name != widget_name)
+            
             self.function_stack.setCurrentIndex(self.widget_map[widget_name]) # Corrected: Use self.widget_map to get index
             self.function_title.setText(self.widget_titles[widget_name])
-            self.function_container.setVisible(True)
+            self.current_widget_name = widget_name  # Track current widget
+            
+            # Create fade-in animation for the function container
+            should_animate = is_first_opening or is_widget_change or force_animation
+            if should_animate:
+                self.function_container.setVisible(True)
+                
+                # Create opacity effect for fade-in animation
+                self.menu_fade_effect = QGraphicsOpacityEffect()
+                self.function_container.setGraphicsEffect(self.menu_fade_effect)
+                
+                # Create fade-in animation
+                self.menu_fade_animation = QPropertyAnimation(self.menu_fade_effect, b"opacity")
+                self.menu_fade_animation.setDuration(300)  # 300ms for smoother, more visible transitions
+                self.menu_fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+                self.menu_fade_animation.setStartValue(0.0)
+                self.menu_fade_animation.setEndValue(1.0)
+                self.menu_fade_animation.start()
+            elif not self.function_container.isVisible():
+                # Just show without animation if no animation needed
+                self.function_container.setVisible(True)
             
             # Set the current selected file if any
             if hasattr(self, 'current_selected_file') and self.current_selected_file:
@@ -612,6 +735,14 @@ class MainWindow(QMainWindow):
     def _hide_function_widget(self):
         """Hide function widget container"""
         self.function_container.setVisible(False)
+        # Clear button highlighting when closing function widget
+        self._clear_button_highlighting()
+        # Reset current widget tracking
+        if hasattr(self, 'current_widget_name'):
+            self.current_widget_name = None
+        # Reset current advanced mode tracking
+        if hasattr(self, 'current_advanced_mode'):
+            self.current_advanced_mode = None
         self.log_message("Funktions-Widget geschlossen")
 
     def _update_function_widgets_theme(self):
@@ -768,6 +899,102 @@ class MainWindow(QMainWindow):
             # as this can sometimes reset the title bar appearance
             self._set_windows_title_bar_theme()
 
+    def _setup_tooltip_delay(self):
+        """Set up 2-second tooltip delay for all toolbar buttons"""
+        # Install custom tooltip behavior on all toolbar buttons
+        for button in self.pdf_function_buttons.values():
+            button.installEventFilter(self)
+        
+        self.view_mode_button.installEventFilter(self)
+        self.theme_button.installEventFilter(self)
+        
+        # Timer for tooltip delay
+        self.tooltip_timer = QTimer()
+        self.tooltip_timer.setSingleShot(True)
+        self.tooltip_timer.timeout.connect(self._show_delayed_tooltip)
+        self.tooltip_timer.setInterval(1000)  # 1 second
+        
+        # Track tooltip state
+        self.tooltip_widget = None
+        self.tooltip_text = ""
+
+    def eventFilter(self, obj, event):
+        """Custom event filter for tooltip delay"""
+        # Check if this is one of our toolbar buttons and get its original tooltip
+        original_tooltip = None
+        if obj in self.pdf_function_buttons.values():
+            # Get original tooltip from our stored tooltips
+            for mode, button in self.pdf_function_buttons.items():
+                if button == obj:
+                    if mode == "delete":
+                        original_tooltip = "Bestimmte Seiten aus einem PDF-Dokument entfernen"
+                    elif mode == "extract":
+                        original_tooltip = "Bestimmte Seiten aus einem PDF-Dokument extrahieren und als neues PDF speichern"
+                    elif mode == "split":
+                        original_tooltip = "Ein PDF-Dokument in mehrere separate Dateien aufteilen"
+                    elif mode == "set_pwd":
+                        original_tooltip = "Ein Passwort für ein PDF-Dokument festlegen zum Schutz vor unbefugtem Zugriff"
+                    elif mode == "remove_pwd":
+                        original_tooltip = "Das Passwort von einem geschützten PDF-Dokument entfernen"
+                    break
+        elif obj == self.view_mode_button:
+            original_tooltip = "Zwischen Listen- und Symbolansicht wechseln"
+        elif obj == self.theme_button:
+            original_tooltip = "Zwischen hellem und dunklem Design wechseln"
+        
+        if original_tooltip:
+            if event.type() == QEvent.Type.Enter:
+                # Mouse entered widget - start timer
+                self.tooltip_widget = obj
+                self.tooltip_text = original_tooltip
+                self.tooltip_timer.start()
+                return False
+            elif event.type() == QEvent.Type.Leave:
+                # Mouse left widget - stop timer and hide tooltip
+                self.tooltip_timer.stop()
+                if self.tooltip_widget == obj:
+                    self.tooltip_widget = None
+                return False
+        
+        return super().eventFilter(obj, event)
+
+    def _setup_tooltip_styling(self):
+        """Set up tooltip styling with black text"""
+        self._apply_tooltip_styling()
+        
+    def _apply_tooltip_styling(self):
+        """Apply tooltip styling with high priority to override theme"""
+        app = QApplication.instance()
+        current_style = app.styleSheet()
+        
+        # Remove any existing QToolTip styling
+        import re
+        current_style = re.sub(r'QToolTip\s*\{[^}]*\}', '', current_style)
+        
+        # Add tooltip styling with !important to override theme
+        tooltip_style = """
+            QToolTip {
+                color: black !important;
+                background-color: white !important;
+                border: 1px solid #CCCCCC !important;
+                padding: 4px !important;
+                border-radius: 3px !important;
+                font-size: 11px !important;
+                font-weight: normal !important;
+            }
+        """
+        app.setStyleSheet(current_style + tooltip_style)
+
+    def _show_delayed_tooltip(self):
+        """Show tooltip after delay"""
+        if self.tooltip_widget and self.tooltip_text:
+            # Force tooltip to show at current mouse position
+            import PySide6.QtWidgets as QtWidgets
+            QtWidgets.QToolTip.showText(
+                self.tooltip_widget.mapToGlobal(self.tooltip_widget.rect().center()),
+                self.tooltip_text,
+                self.tooltip_widget
+            )
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -776,7 +1003,7 @@ if __name__ == "__main__":
     # qdarktheme.setup_theme("light") 
     
     # Set application properties for better integration
-    app.setApplicationName("PDF & Datei Werkzeug")
+    app.setApplicationName("PDF Tool")
     app.setApplicationVersion("2.0")
     app.setOrganizationName("PDF Tools")
     

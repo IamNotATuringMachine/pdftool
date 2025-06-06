@@ -19,7 +19,7 @@ from reportlab.lib.utils import ImageReader as ReportLabImageReader
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QListWidget, QListWidgetItem,
     QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QGroupBox, QCheckBox,
-    QApplication, QFrame, QFileIconProvider
+    QApplication, QFrame, QFileIconProvider, QStyle
 )
 from PySide6.QtCore import Qt, QUrl, QSize, QFileInfo, QEvent, Signal
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QKeyEvent
@@ -452,32 +452,35 @@ class FileProcessingTab(QWidget): # Renamed class
         filename_label.setWordWrap(True)
         layout.addWidget(filename_label, 1)
         
-        # Nach oben Pfeil - klareres Symbol
-        up_button = QPushButton("▲")
+        # Use QIcon for buttons for better visibility
+        style = self.style()
+        up_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+        down_icon = style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        delete_icon = style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton)
+
+        up_button = QPushButton()
+        up_button.setIcon(up_icon)
         up_button.setMaximumSize(30, 25)
         up_button.setEnabled(index > 0)
         up_button.setToolTip("Nach oben verschieben")
-        up_button.setStyleSheet("QPushButton { font-weight: bold; font-size: 12px; }")
         up_button.clicked.connect(lambda: self._move_file_up(file_path))
         layout.addWidget(up_button)
-        
-        # Nach unten Pfeil - klareres Symbol
-        down_button = QPushButton("▼")
+
+        down_button = QPushButton()
+        down_button.setIcon(down_icon)
         down_button.setMaximumSize(30, 25)
         down_button.setEnabled(index < len(self.selected_files_for_processing) - 1)
         down_button.setToolTip("Nach unten verschieben")
-        down_button.setStyleSheet("QPushButton { font-weight: bold; font-size: 12px; }")
         down_button.clicked.connect(lambda: self._move_file_down(file_path))
         layout.addWidget(down_button)
-        
-        # Delete Button - klareres Symbol
-        delete_button = QPushButton("✖")
+
+        delete_button = QPushButton()
+        delete_button.setIcon(delete_icon)
         delete_button.setMaximumSize(30, 25)
-        delete_button.setStyleSheet("QPushButton { color: red; font-weight: bold; font-size: 12px; }")
         delete_button.setToolTip("Datei entfernen")
         delete_button.clicked.connect(lambda: self._remove_single_file(file_path))
         layout.addWidget(delete_button)
-        
+
         # Speichere file_path als Attribut für spätere Referenz
         widget.file_path = file_path
         
