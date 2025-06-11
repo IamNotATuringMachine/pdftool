@@ -5,6 +5,7 @@ import tempfile
 import subprocess # Added
 import platform # Added
 import traceback # Added for detailed error reporting
+import html
 from PyPDF2 import PdfWriter, PdfReader 
 from PIL import Image, UnidentifiedImageError, ImageSequence
 from xhtml2pdf import pisa
@@ -15,6 +16,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader as ReportLabImageReader
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import Paragraph, Frame, SimpleDocTemplate
+from reportlab.lib.enums import TA_LEFT
+from reportlab.lib.colors import black
 
 from PySide6.QtWidgets import (
     QWidget, QPushButton, QLabel, QListWidget, QListWidgetItem,
@@ -84,6 +89,7 @@ class FileProcessingTab(QWidget): # Renamed class
         self.app_root = app_root
         self.selected_files_for_processing = [] # Renamed variable
         self.preview_size = QSize(64, 64)
+        self.last_output_dir = os.getcwd() # Remember last output directory
 
         self._init_ui()
         if self.app_root:
@@ -106,7 +112,7 @@ class FileProcessingTab(QWidget): # Renamed class
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
         self.setLayout(main_layout)
 
@@ -182,26 +188,17 @@ class FileProcessingTab(QWidget): # Renamed class
         # and action buttons area shorter, while removing the bottom spacer.
         main_layout.setStretch(0, 5) # Main content area gets more space
         
-        options_frame = QFrame()
-        options_layout = QHBoxLayout(options_frame)
-        options_layout.setContentsMargins(0,0,0,0)
-        self.single_pdf_output_check = QCheckBox("Alle Dateien in eine einzelne PDF-Datei zusammenfassen/ausgeben") 
-        self.single_pdf_output_check.setChecked(True)
-        options_layout.addWidget(self.single_pdf_output_check)
-        options_layout.addStretch()
-        main_layout.addWidget(options_frame)
-        main_layout.setStretch(1, 0) # Options frame takes minimal space
-
         action_layout = QVBoxLayout()
-        self.unified_action_button = QPushButton("Speichern / Aktion ausführen") # Renamed and text changed
-        self.unified_action_button.clicked.connect(self._handle_unified_action) # Connect to new handler
+        self.unified_action_button = QPushButton("Start_old") # Renamed and text changed
+        self.unified_action_button.clicked.connect(self.handle_unified_action) # Connect to new handler
+        self.unified_action_button.setVisible(False) # Hide the button
         action_layout.addWidget(self.unified_action_button)
         self.processing_status_label = QLabel("") 
         self.processing_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.processing_status_label.hide()  # Hide the status label completely
         # action_layout.addWidget(self.processing_status_label)  # Don't add to layout
         main_layout.addLayout(action_layout)
-        main_layout.setStretch(2, 0) # Action layout takes minimal space
+        main_layout.setStretch(1, 0) # Action layout takes minimal space
 
         # Adjust vertical stretch factors to make file_list_widget area shorter
         # controls_container (index 0) gets 2 parts of the flexible space
@@ -397,8 +394,8 @@ class FileProcessingTab(QWidget): # Renamed class
 
     def _on_rows_moved(self, parent, start, end, destination, row):
         self._update_internal_file_list_from_widget()
-        if hasattr(self.app_root, 'log_message'):
-            self.app_root.log_message("Dateireihenfolge geändert.")
+        # if hasattr(self.app_root, 'log_message'):
+        #     self.app_root.log_message("Dateireihenfolge geändert.")
 
     def _update_internal_file_list_from_widget(self):
         self.selected_files_for_processing.clear()
@@ -495,8 +492,8 @@ class FileProcessingTab(QWidget): # Renamed class
                 self.selected_files_for_processing[current_idx], self.selected_files_for_processing[current_idx - 1] = \
                     self.selected_files_for_processing[current_idx - 1], self.selected_files_for_processing[current_idx]
                 self._refresh_list_widget_items()
-                if hasattr(self.app_root, 'log_message'):
-                    self.app_root.log_message(f"'{os.path.basename(file_path)}' nach oben verschoben.")
+                # if hasattr(self.app_root, 'log_message'):
+                #     self.app_root.log_message(f"'{os.path.basename(file_path)}' nach oben verschoben.")
         except ValueError:
             pass
     
@@ -509,8 +506,8 @@ class FileProcessingTab(QWidget): # Renamed class
                 self.selected_files_for_processing[current_idx], self.selected_files_for_processing[current_idx + 1] = \
                     self.selected_files_for_processing[current_idx + 1], self.selected_files_for_processing[current_idx]
                 self._refresh_list_widget_items()
-                if hasattr(self.app_root, 'log_message'):
-                    self.app_root.log_message(f"'{os.path.basename(file_path)}' nach unten verschoben.")
+                # if hasattr(self.app_root, 'log_message'):
+                #     self.app_root.log_message(f"'{os.path.basename(file_path)}' nach unten verschoben.")
         except ValueError:
             pass
     
@@ -579,13 +576,13 @@ class FileProcessingTab(QWidget): # Renamed class
             if hasattr(self.app_root, 'log_message'):
                 file_count = len(added_to_processing_list_paths)
                 self.app_root.log_message(f"{file_count} Datei(en) hinzugefügt.")
-                self.app_root.log_message(f"{file_count} neue Datei(en) zur Verarbeitung hinzugefügt")
+                # self.app_root.log_message(f"{file_count} neue Datei(en) zur Verarbeitung hinzugefügt")
         elif processed_any_paths: # Files were provided, but none were new to selected_files_for_processing
             self._log_to_console("Ausgewählte Datei(en) bereits in der Liste oder nicht unterstützt.")
 
     def _add_files_to_process_list(self): # Renamed method
-        if hasattr(self.app_root, 'log_message'):
-            self.app_root.log_message("Datei-Dialog geöffnet")
+        # if hasattr(self.app_root, 'log_message'):
+        #     self.app_root.log_message("Datei-Dialog geöffnet")
         
         # FILETYPES_FOR_DIALOG is now correctly configured due to constants.py change
         dialog_filter = " ;; ".join([f"{ftype_desc} ({' '.join(['*'+ext for ext in exts.split()])})" for ftype_desc, exts in FILETYPES_FOR_DIALOG if exts]) # Ensure exts is not empty
@@ -662,8 +659,8 @@ class FileProcessingTab(QWidget): # Renamed class
                     self.file_list_widget.scrollToItem(self.file_list_widget.item(i))
                     break
             direction_text = "nach oben" if direction == -1 else "nach unten"
-            if hasattr(self.app_root, 'log_message'):
-                self.app_root.log_message(f"Datei {direction_text} verschoben.")
+            # if hasattr(self.app_root, 'log_message'):
+            #     self.app_root.log_message(f"Datei {direction_text} verschoben.")
 
     def _move_process_item_up(self): # Renamed method
         self._move_item_in_list(-1)
@@ -671,30 +668,37 @@ class FileProcessingTab(QWidget): # Renamed class
     def _move_process_item_down(self): # Renamed method
         self._move_item_in_list(1)
 
-    def _handle_unified_action(self):
-        """Handles the action from the main button, routing to either processing or a function widget action"""
-        action_handled_by_function_widget = False
-        if hasattr(self.app_root, 'function_container') and self.app_root.function_container.isVisible():
-            current_widget = self.app_root.function_stack.currentWidget()
+    def handle_unified_action(self):
+        """Handles the main action, deciding whether to merge, convert, or perform other operations."""
+        # This will now be the primary method called by the main "Start" button
+        if self.app_root and hasattr(self.app_root, 'current_widget_name') and self.app_root.current_widget_name:
+            active_widget_name = self.app_root.current_widget_name
             
-            if isinstance(current_widget, PDFAdvancedOperationsWidget):
-                self.app_root.log_message("Aktion wird durch PDF Anpassen & Passwort-Widget ausgeführt...")
-                if hasattr(current_widget, 'public_perform_action_and_save'):
-                    current_widget.public_perform_action_and_save()
-                elif hasattr(current_widget, 'is_ready_for_action') and current_widget.is_ready_for_action():
-                    # Fallback for older structure, if public_perform_action_and_save isn't there
-                    current_widget.public_perform_action_and_save()
-                else:
-                    self.app_root.log_message("PDF Anpassen & Passwort-Widget ist nicht bereit (fehlende Datei oder Seitenangabe).")
-                action_handled_by_function_widget = True
-        
-        if not action_handled_by_function_widget:
-            self.app_root.log_message("Aktion wird durch allgemeine Dateiverarbeitung ausgeführt...")
-            self._execute_processing()
+            is_single_pdf = (len(self.selected_files_for_processing) == 1 and
+                             self.selected_files_for_processing[0].lower().endswith('.pdf'))
+
+            if active_widget_name == "advanced_ops":
+                # The advanced ops widget is active.
+                # If there's a single PDF, we assume the user wants to perform an advanced operation on it.
+                if is_single_pdf:
+                    if self.app_root.advanced_ops_widget.is_ready():
+                        self.app_root.log_message("Aktion wird durch PDF Anpassen & Passwort-Widget ausgeführt...")
+                        self.app_root.advanced_ops_widget.execute_action()
+                    else:
+                        self.app_root.log_message("PDF Anpassen & Passwort-Widget ist nicht bereit (fehlende Datei oder Seitenangabe).")
+                        QMessageBox.warning(self, "Aktion nicht bereit", "Bitte wählen Sie eine PDF-Datei aus und geben Sie die erforderlichen Informationen (z.B. Seiten) im 'PDF Anpassen & Passwort'-Bereich an.")
+                    return # Stop further processing, as the intent was to use the advanced widget.
+                # If the advanced ops tab is active, but the files are not a single PDF,
+                # we fall through to the default merge/convert behavior, assuming that's the user's intent.
+                # No 'else' block needed here, we just won't return.
+
+        # Fallback to the default processing (merge/convert) if no special function widget is active
+        # or if the active widget isn't applicable to the current file selection.
+        self._execute_processing()
 
     def _execute_processing(self): # Renamed method
         if not self.selected_files_for_processing:
-            QMessageBox.information(self, "Keine Dateien", "Bitte fügen Sie zuerst Dateien zur Liste hinzu.")
+            QMessageBox.warning(self, "Keine Dateien ausgewählt", "Bitte fügen Sie Dateien zur Liste hinzu, bevor Sie fortfahren.")
             self._log_to_console("Keine Dateien für Verarbeitung.")
             return
 
@@ -714,7 +718,7 @@ class FileProcessingTab(QWidget): # Renamed class
         # Log the start of processing
         if hasattr(self.app_root, 'log_message'):
             file_count = len(files_to_process)
-            output_type = "zu einer PDF zusammengeführt" if self.single_pdf_output_check.isChecked() else "zu separaten PDFs konvertiert"
+            output_type = "zu einer PDF zusammengeführt"
             self.app_root.log_message(f"Verarbeitung gestartet: {file_count} Datei(en) werden {output_type}")
 
         # Use a copy for processing to avoid issues if the list is modified elsewhere during processing
@@ -724,31 +728,14 @@ class FileProcessingTab(QWidget): # Renamed class
         self._log_to_console("Verarbeite Dateien...")
         QApplication.processEvents() # Update UI
 
-        output_directory = ""
-        # Determine output directory for individual file saving if not merging
-        if not self.single_pdf_output_check.isChecked() and files_to_process:
-            # Always ask for an output directory if not merging to a single file
-            output_directory = QFileDialog.getExistingDirectory(
-                self, "Ausgabeverzeichnis für separate PDF(s) auswählen", # Clarified title
-                os.path.dirname(files_to_process[0]) if files_to_process else ""
-            )
-            if not output_directory:
-                self._log_to_console("Verarbeitung abgebrochen. Kein Ausgabeverzeichnis gewählt.")
-                if hasattr(self.app_root, 'log_message'):
-                    self.app_root.log_message("Verarbeitung abgebrochen: Kein Ausgabeverzeichnis gewählt")
-                return
-
         try:
-            if self.single_pdf_output_check.isChecked():
-                if len(files_to_process) == 1 and files_to_process[0].lower().endswith(".pdf"):
-                    # If it's a single PDF and we want a single output, it's essentially a copy/rename operation.
-                    # Or, it could imply that no processing is needed, but we should still offer to save it.
-                    # For now, let's treat it like any other single file to be "processed" into a single PDF.
-                    pass # The existing logic in _process_files_to_single_pdf will handle this.
+            if len(files_to_process) == 1 and files_to_process[0].lower().endswith(".pdf"):
+                # If it's a single PDF and we want a single output, it's essentially a copy/rename operation.
+                # Or, it could imply that no processing is needed, but we should still offer to save it.
+                # For now, let's treat it like any other single file to be "processed" into a single PDF.
+                pass # The existing logic in _process_files_to_single_pdf will handle this.
 
-                self._process_files_to_single_pdf(files_to_process)
-            else:
-                self._process_files_to_separate_pdfs(files_to_process, output_directory)
+            self._process_files_to_single_pdf(files_to_process)
             
             # Status messages are set within the _process_files... methods
             # self._log_to_console("Dateiverarbeitung abgeschlossen.") 
@@ -766,12 +753,15 @@ class FileProcessingTab(QWidget): # Renamed class
             self._log_to_console("Keine Dateien zum Verarbeiten ausgewählt.")
             return
 
+        default_save_path = os.path.join(self.last_output_dir, "kombinierte_datei.pdf")
         output_pdf_path, _ = QFileDialog.getSaveFileName(self, "Einzelne PDF speichern unter...",
-                                                         os.path.join(os.getcwd(), "kombinierte_datei.pdf"),
+                                                         default_save_path,
                                                          "PDF-Dateien (*.pdf)")
         if not output_pdf_path:
             self._log_to_console("Speichervorgang abgebrochen.")
             return
+
+        self.last_output_dir = os.path.dirname(output_pdf_path) # Remember for next time
 
         self._log_to_console("Verarbeite Dateien zu einer einzelnen PDF...")
         QApplication.processEvents()
@@ -810,27 +800,26 @@ class FileProcessingTab(QWidget): # Renamed class
                         file_processed_successfully = True
                     img_pdf_bytes.close()
                 elif ext in TEXT_EXTENSIONS:
-                    txt_pdf_bytes = io.BytesIO()
-                    pdf_canvas = canvas.Canvas(txt_pdf_bytes, pagesize=A4)
-                    if self._add_text_file_to_pdf_canvas(file_path, pdf_canvas):
-                        pdf_canvas.save()
-                        txt_pdf_bytes.seek(0)
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                    txt_pdf_bytes = self._convert_text_content_to_pdf_bytes(content)
+                    if txt_pdf_bytes:
                         txt_pdf_reader = PdfReader(txt_pdf_bytes)
                         for page in txt_pdf_reader.pages:
                             output_pdf_writer.add_page(page)
                         file_processed_successfully = True
-                    txt_pdf_bytes.close()
+                        txt_pdf_bytes.close()
                 elif ext in RTF_EXTENSIONS:
-                    rtf_pdf_bytes = io.BytesIO()
-                    pdf_canvas = canvas.Canvas(rtf_pdf_bytes, pagesize=A4)
-                    if self._add_rtf_to_pdf_canvas(file_path, pdf_canvas):
-                        pdf_canvas.save()
-                        rtf_pdf_bytes.seek(0)
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        rtf_content = f.read()
+                    text_content = rtf_to_text(rtf_content)
+                    rtf_pdf_bytes = self._convert_text_content_to_pdf_bytes(text_content)
+                    if rtf_pdf_bytes:
                         rtf_pdf_reader = PdfReader(rtf_pdf_bytes)
                         for page in rtf_pdf_reader.pages:
                             output_pdf_writer.add_page(page)
                         file_processed_successfully = True
-                    rtf_pdf_bytes.close()
+                        rtf_pdf_bytes.close()
                 elif ext in HTML_EXTENSIONS:
                     temp_html_pdf_fd, temp_html_pdf_path = tempfile.mkstemp(suffix=".pdf")
                     os.close(temp_html_pdf_fd)
@@ -902,6 +891,11 @@ class FileProcessingTab(QWidget): # Renamed class
             try:
                 with open(output_pdf_path, "wb") as f_out:
                     output_pdf_writer.write(f_out)
+                
+                # Emit signal with output file path for recent files list
+                if os.path.exists(output_pdf_path):
+                    self.files_processed_for_recent_list.emit([output_pdf_path])
+
                 final_message = f"Erfolgreich {num_successful} Datei(en) in '{os.path.basename(output_pdf_path)}' gespeichert."
                 if num_errors > 0:
                     final_message += f" {num_errors} Datei(en) konnten nicht verarbeitet werden."
@@ -1051,6 +1045,10 @@ class FileProcessingTab(QWidget): # Renamed class
         if first_error_detail:
              final_message += f"\n\nDetails zum ersten Fehler:\n{first_error_detail}"
         
+        # Emit signal for recently used list
+        if processed_file_paths:
+            self.files_processed_for_recent_list.emit(processed_file_paths)
+        
         # Log the completion
         if hasattr(self.app_root, 'log_message'):
             if num_errors == 0:
@@ -1155,72 +1153,46 @@ class FileProcessingTab(QWidget): # Renamed class
             raise Exception(f"Fehler bei Bildverarbeitung {os.path.basename(image_path)}: {e}")
 
     def _render_text_to_pdf_canvas(self, text_content, pdf_canvas, source_filename="Text"):
-        # Based on original, simpler text rendering
-        text_object = pdf_canvas.beginText()
-        text_object.setFont("Helvetica", 10)
-        text_object.setTextOrigin(inch, A4[1] - inch) # Start near top-left
-        
-        max_line_width = A4[0] - 2 * inch # Max width for text lines
-        line_height = 12 # Points
+        """Renders text content onto a canvas, automatically handling page breaks."""
+        # Use ReportLab's Paragraph and Frame for robust text wrapping and pagination.
+        styles = getSampleStyleSheet()
+        # Create a custom style to ensure it looks like plain text
+        text_style = ParagraphStyle(
+            name='BodyTextCustom',
+            parent=styles['BodyText'],
+            fontName='Helvetica',
+            fontSize=10,
+            leading=12,
+            alignment=TA_LEFT,
+            textColor=black,
+        )
 
-        y_position = A4[1] - inch
-        first_page = True
+        margin = inch
+        page_width, page_height = A4
+        drawable_width = page_width - 2 * margin
+        drawable_height = page_height - 2 * margin
 
-        lines = text_content.split('\n')
-        for line in lines:
-            # Simple line splitting if too long (better: use Paragraph from reportlab.platypus)
-            while pdf_canvas.stringWidth(line, "Helvetica", 10) > max_line_width:
-                # Find a split point (e.g., at a space)
-                split_at = -1
-                for i in range(len(line) -1, 0, -1):
-                    if line[i] == ' ':
-                        if pdf_canvas.stringWidth(line[:i], "Helvetica", 10) <= max_line_width:
-                            split_at = i
-                            break
-                if split_at == -1: # Cannot split nicely, just truncate (or force split)
-                    # This is a very basic split, might cut words.
-                    # A more robust solution would use ReportLab's Paragraph.
-                    temp_line_part = line
-                    while pdf_canvas.stringWidth(temp_line_part, "Helvetica", 10) > max_line_width:
-                        temp_line_part = temp_line_part[:-1]
-                    
-                    split_at = len(temp_line_part)
-                    if split_at == 0 and len(line) > 0: # single very long char string
-                         split_at = int(max_line_width / pdf_canvas.stringWidth("X", "Helvetica", 10)) # rough char count
+        # Prepare story with the full text content.
+        # Newlines are replaced with <br/> tags for the Paragraph flowable.
+        escaped_content = html.escape(text_content).replace('\n', '<br/>')
+        p = Paragraph(escaped_content, text_style)
+        story = [p]
 
+        # Create a frame on the first page of the canvas.
+        # The coordinate system for Frame is from the bottom-left of the page.
+        frame = Frame(margin, margin, drawable_width, drawable_height, id='normal')
 
-                current_line_part = line[:split_at]
-                line = line[split_at:].lstrip() # Remainder for next iteration/line
+        # The frame's add method will draw what fits on the current canvas page
+        # and return the part of the story that did not fit.
+        remaining_story = frame.add(story, pdf_canvas)
 
-                if y_position < inch: # Check for new page
-                    pdf_canvas.drawText(text_object)
-                    pdf_canvas.showPage()
-                    text_object = pdf_canvas.beginText()
-                    text_object.setFont("Helvetica", 10)
-                    text_object.setTextOrigin(inch, A4[1] - inch)
-                    y_position = A4[1] - inch
-                    first_page = False
-
-                text_object.setTextOrigin(inch, y_position)
-                text_object.textLine(current_line_part)
-                y_position -= line_height
-            
-            # Process (remaining part of) the line
-            if y_position < inch: # Check for new page
-                pdf_canvas.drawText(text_object)
-                pdf_canvas.showPage()
-                text_object = pdf_canvas.beginText()
-                text_object.setFont("Helvetica", 10)
-                text_object.setTextOrigin(inch, A4[1] - inch)
-                y_position = A4[1] - inch
-                first_page = False
-            
-            text_object.setTextOrigin(inch, y_position)
-            text_object.textLine(line)
-            y_position -= line_height
-
-        pdf_canvas.drawText(text_object)
-        # pdf_canvas.showPage() # Called by save or outer loop if needed
+        # If there is a remaining story, it means we need more pages.
+        while remaining_story:
+            pdf_canvas.showPage()
+            # Create a new frame for the new page
+            frame = Frame(margin, margin, drawable_width, drawable_height, id='normal')
+            # Add the rest of the story to the new frame.
+            remaining_story = frame.add(remaining_story, pdf_canvas)
 
     def _add_text_file_to_pdf_canvas(self, file_path, pdf_canvas):
         try:
@@ -1607,7 +1579,7 @@ class FileProcessingTab(QWidget): # Renamed class
             info.append("✗ MS Word: Nicht verfügbar")
         
         if self.msexcel_available:
-            info.append("✓ MS Excel: Verfügbar") 
+            info.append("✓ MS Excel: Verfügbar")
             info.append("  Unterstützt: .xls, .xlsx")
         else:
             info.append("✗ MS Excel: Nicht verfügbar")
@@ -1629,50 +1601,59 @@ class FileProcessingTab(QWidget): # Renamed class
 
     # New public slot for adding a single file (e.g., from file explorer double-click)
     def add_single_file_from_path(self, file_path: str):
-        if not file_path or not os.path.isfile(file_path):
-            print(f"Ungültiger Dateipfad von Explorer erhalten: {file_path}")
-            self._log_to_console(f"Ungültiger Pfad: {os.path.basename(file_path if file_path else "N/A")}")
-            return
-
-        _, ext = os.path.splitext(file_path.lower())
-        # Ensure ALL_SUPPORTED_EXT_PATTERNS_LIST is comprehensive enough for files from explorer
-        # Typically, explorer will show PDFs, so this check should pass for intended files.
-        if ext not in ALL_SUPPORTED_EXT_PATTERNS_LIST:
-            QMessageBox.warning(self, "Nicht unterstützter Dateityp", 
-                                f"Die Datei '{os.path.basename(file_path)}' vom Explorer hat einen nicht unterstützten Dateityp ({ext}).")
-            self._log_to_console(f"Explorer: Typ nicht unterstützt: {os.path.basename(file_path)}")
-            return
-
-        # Use the existing logic to add to GUI list and internal tracking
-        self._add_files_to_gui_list([file_path]) # Pass as a list
+        """Add a single file to the list programmatically."""
+        if os.path.exists(file_path):
+            if file_path not in self.selected_files_for_processing:
+                self.selected_files_for_processing.append(file_path)
+                self._refresh_list_widget_items()
+                # if hasattr(self.app_root, 'log_message'):
+                #     self.app_root.log_message(f"Datei hinzugefügt: {os.path.basename(file_path)}")
+        # else:
+            # if hasattr(self.app_root, 'log_message'):
+            #     self.app_root.log_message(f"Fehler: Datei nicht gefunden unter '{file_path}'")
 
     def _show_password_dialog(self):
-        """Show dialog for setting/removing PDF password"""
         from gui.pdf_password_dialog import PDFPasswordDialog
         dialog = PDFPasswordDialog(self)
-        dialog.exec()
-
+        dialog.exec_()
+        
     def _show_edit_pdf_dialog(self):
-        """Show dialog for editing individual PDF"""
         from gui.pdf_edit_dialog import PDFEditDialog
         dialog = PDFEditDialog(self)
-        dialog.exec()
+        dialog.exec_()
 
-    def _show_delete_pages_dialog(self):
-        """Show dialog for deleting PDF pages"""
-        from gui.modify_pages_tab import ModifyPagesTab
-        from PySide6.QtWidgets import QDialog, QVBoxLayout
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("PDF Seiten löschen/extrahieren")
-        dialog.setModal(True)
-        dialog.resize(600, 400)
-        
-        layout = QVBoxLayout(dialog)
-        modify_widget = ModifyPagesTab(app_root=self.app_root)
-        layout.addWidget(modify_widget)
-        
-        dialog.exec()
+    def _convert_text_content_to_pdf_bytes(self, text_content):
+        """Converts a string of text into a PDF and returns it as a BytesIO object."""
+        buffer = io.BytesIO()
+        try:
+            doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                    rightMargin=inch, leftMargin=inch,
+                                    topMargin=inch, bottomMargin=inch)
+            
+            styles = getSampleStyleSheet()
+            text_style = ParagraphStyle(
+                name='BodyTextCustom',
+                parent=styles['BodyText'],
+                fontName='Helvetica',
+                fontSize=10,
+                leading=12,
+                alignment=TA_LEFT,
+                textColor=black,
+            )
+            
+            # Prepare story. Newlines are replaced with <br/> tags.
+            escaped_content = html.escape(text_content).replace('\n', '<br/>')
+            p = Paragraph(escaped_content, text_style)
+            story = [p]
+
+            doc.build(story)
+            buffer.seek(0)
+            return buffer
+        except Exception as e:
+            print(f"Error converting text content to PDF bytes: {e}")
+            buffer.close()
+            # Re-raise to be caught by the calling process
+            raise e
 
 
 

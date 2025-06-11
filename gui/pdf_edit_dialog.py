@@ -13,6 +13,9 @@ class PDFEditDialog(QDialog):
         self.setModal(True)
         self.resize(600, 400)
         
+        # Remove minimize button and set window flags for rounded corners
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.CustomizeWindowHint)
+        
         self.input_pdf_path = None
         self.pdf_reader = None
         
@@ -236,4 +239,71 @@ class PDFEditDialog(QDialog):
             
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"Fehler beim Aufteilen der PDF: {str(e)}")
-            self.status_label.setText("Fehler beim Aufteilen.") 
+            self.status_label.setText("Fehler beim Aufteilen.")
+    
+    def update_theme(self, theme_name):
+        """Update the dialog's theme to match the application theme."""
+        if theme_name == "dark":
+            bg_color = "#3F4042"
+            text_color = "#CCCCCC"
+            border_color = "#555559"
+            input_bg_color = "#2b2b2b"
+            input_text_color = "#CCCCCC"
+            placeholder_color = "#888888"
+        else:
+            bg_color = "#FFFFFF"
+            text_color = "#333333"
+            border_color = "#D0D0D0"
+            input_bg_color = "#FFFFFF"
+            input_text_color = "#333333"
+            placeholder_color = "#999999"
+        
+        # Apply styling to this dialog
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {bg_color};
+                color: {text_color};
+                border-radius: 10px;
+            }}
+            QGroupBox {{
+                border: none;
+                padding-top: 15px;
+                margin-top: 5px;
+                font-weight: bold;
+                color: {text_color};
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 0 0 5px;
+            }}
+            QListWidget {{
+                background-color: {input_bg_color};
+                color: {input_text_color};
+                border: 1px solid {border_color};
+                border-radius: 4px;
+                selection-background-color: #0078D4;
+                selection-color: white;
+            }}
+            QLabel {{
+                color: {text_color};
+            }}
+            QPushButton {{
+                background-color: {bg_color};
+                color: {text_color};
+                border: 1px solid {border_color};
+                border-radius: 4px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {border_color};
+            }}
+            QPushButton:pressed {{
+                background-color: {placeholder_color};
+            }}
+            QPushButton:disabled {{
+                background-color: {bg_color};
+                color: {placeholder_color};
+                border: 1px solid {placeholder_color};
+            }}
+        """) 

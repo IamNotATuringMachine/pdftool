@@ -133,6 +133,11 @@ class MainWindow(QMainWindow):
         self.remove_password_button.setToolTip("Das Passwort von einem geschützten PDF-Dokument entfernen")
         self.remove_password_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("remove_pwd"))
         self.toolbar.addWidget(self.remove_password_button)
+
+        self.file_to_pdf_button = QPushButton("Datei(en) zu PDF")
+        self.file_to_pdf_button.setToolTip("Eine oder mehrere Dateien verschiedener Formate einzeln oder zusammen als PDF exportieren")
+        self.file_to_pdf_button.clicked.connect(lambda: self._show_advanced_ops_with_mode("convert_to_pdf"))
+        self.toolbar.addWidget(self.file_to_pdf_button)
         
         # Store PDF function buttons for highlighting
         self.pdf_function_buttons = {
@@ -140,7 +145,8 @@ class MainWindow(QMainWindow):
             "extract": self.extract_pages_button,
             "split": self.split_pdf_button,
             "set_pwd": self.set_password_button,
-            "remove_pwd": self.remove_password_button
+            "remove_pwd": self.remove_password_button,
+            "convert_to_pdf": self.file_to_pdf_button
         }
 
         # Add spacer to push theme controls to the right
@@ -215,24 +221,26 @@ class MainWindow(QMainWindow):
         # Clear previous highlighting
         self._clear_button_highlighting()
         
-        # Set the new active function and highlight the button
-        self.active_pdf_function = mode
+        # Highlight the new active button
         self._highlight_active_button(mode)
         
-        # Check if this is a mode change for animation
-        is_mode_change = (self.function_container.isVisible() and 
-                         hasattr(self, 'current_advanced_mode') and 
-                         self.current_advanced_mode != mode)
+        # Show the function widget container (this will handle the animation)
+        self._show_function_widget("advanced_ops")
         
-        # Show the widget with mode change information
-        self._show_function_widget("advanced_ops", force_animation=is_mode_change)
+        # Delegate mode setting to the advanced_ops_widget
+        self.advanced_ops_widget.set_mode(mode) 
         
-        # Track the current mode
-        self.current_advanced_mode = mode
-        self.advanced_ops_widget.set_mode(mode)
+        # If converting, pass the file list from the main tab
+        if mode == 'convert_to_pdf':
+            files_to_convert = self.file_processing_tab.selected_files_for_processing
+            self.advanced_ops_widget.set_files_for_conversion(files_to_convert)
+
+        # Show the start button
+        if hasattr(self, 'start_button_container'):
+            self.start_button_container.setVisible(True)
 
     def _highlight_active_button(self, mode):
-        """Highlight the active PDF function button"""
+        """Highlight the currently active PDF function button."""
         if mode in self.pdf_function_buttons:
             button = self.pdf_function_buttons[mode]
             # Apply highlighting style that matches the theme with consistent text formatting
@@ -432,6 +440,10 @@ class MainWindow(QMainWindow):
         else: # Light theme
             # Additional QSS for light theme with specific white areas - simplified
             light_theme_qss = main_window_rounded_qss + """
+            QToolBar {
+                background-color: #FFFEF7; /* Very light beige, matches main background */
+                border: none;
+            }
             /* Force white background for important UI elements */
             QListWidget {
                 background-color: white !important;
@@ -449,7 +461,7 @@ class MainWindow(QMainWindow):
             
             custom_light_colors = {
                 "primary": "#000000",                    # Set primary color (buttons) to black for light mode
-                "background": "#FFFEF7",                 # Very light beige, almost white background
+                "background": "#F5F5DC",                 # A slightly darker beige (Beige)
                 "primary>button.hoverBackground": "#C8C4B4",   # Button hover color
                 "primary>button.activeBackground": "#BCB8A8",  # Button pressed color
                 "input.background": "#FFFFFF"            # Keep input fields white
@@ -520,117 +532,128 @@ class MainWindow(QMainWindow):
                     border: 2px solid {console_border_color};
                     border-radius: 4px;
                     padding: 5px;
-                    margin-bottom: 5px;
                     font-family: 'Consolas', 'Monaco', monospace;
                     font-size: 9pt;
                 }}
             """)
 
     def _set_theme_with_fade(self, theme_name):
-        """Set theme with fade transition effect"""
-        if self.current_theme == theme_name:
+        """Set the application theme with a fade effect."""
+        if self.is_fading or not self.winId():
             return
-            
-        if self.is_fading:
-            # If already fading, queue the new theme
-            self.pending_theme = theme_name
-            return
-            
+
+        # Store visibility state of the function widget and hide it to prevent flickering
+        function_widget_visible = self.function_container.isVisible()
+        self.function_container.setVisible(False)
+
         self.is_fading = True
-        self.pending_theme = theme_name
         
-        # Create new fade effect and animation for each transition
-        self.fade_effect = QGraphicsOpacityEffect()
-        self.fade_animation = QPropertyAnimation(self.fade_effect, b"opacity")
-        self.fade_animation.setDuration(300)  # 300ms fade duration
-        self.fade_animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        # Opacity effect for the fade
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+
+        # Fade out animation
+        self.fade_out_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_out_animation.setDuration(200) # 200ms fade out
+        self.fade_out_animation.setStartValue(1.0)
+        self.fade_out_animation.setEndValue(0.0)
+        self.fade_out_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
         
-        # Set up fade effect on central widget
-        if self.centralWidget():
-            self.centralWidget().setGraphicsEffect(self.fade_effect)
-            
-        # Connect animation signals
-        self.fade_animation.finished.connect(self._on_fade_finished)
+        # When fade-out is finished, change the theme and start fade-in
+        self.fade_out_animation.finished.connect(
+            lambda: self._on_fade_finished(theme_name, function_widget_visible)
+        )
         
-        # Start fade out
-        self.fade_animation.setStartValue(1.0)
-        self.fade_animation.setEndValue(0.0)
-        self.fade_animation.start()
-    
-    def _on_fade_finished(self):
-        """Handle fade animation completion"""
-        # Disconnect the finished signal to avoid repeated calls
-        if self.fade_animation:
-            self.fade_animation.finished.disconnect()
+        self.fade_out_animation.start()
+
+    def _on_fade_finished(self, theme_name, was_visible):
+        """Called after fade-out. Applies the new theme and starts fade-in."""
+        self._set_theme(theme_name) # Apply the new theme
         
-        if self.fade_animation and self.fade_animation.endValue() == 0.0:
-            # Fade out completed, apply new theme
-            if self.pending_theme:
-                self.current_theme = self.pending_theme
-                self._apply_theme()
-            
-            # Start fade in
-            self.fade_animation.setStartValue(0.0)
-            self.fade_animation.setEndValue(1.0)
-            self.fade_animation.finished.connect(self._on_fade_in_finished)
-            self.fade_animation.start()
+        # Fade in animation
+        self.fade_in_animation = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.fade_in_animation.setDuration(250) # 250ms fade in
+        self.fade_in_animation.setStartValue(0.0)
+        self.fade_in_animation.setEndValue(1.0)
+        self.fade_in_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
         
-    def _on_fade_in_finished(self):
-        """Handle fade in completion"""
-        # Disconnect the finished signal
-        if self.fade_animation:
-            self.fade_animation.finished.disconnect()
+        # When fade-in is finished, clean up
+        self.fade_in_animation.finished.connect(lambda: self._on_fade_in_finished(was_visible))
         
-        # Remove the graphics effect
-        if self.centralWidget():
-            self.centralWidget().setGraphicsEffect(None)
-        
-        # Clean up
-        self.fade_effect = None
-        self.fade_animation = None
+        self.fade_in_animation.start()
+
+    def _on_fade_in_finished(self, was_visible):
+        """Called after fade-in is complete."""
+        self.setGraphicsEffect(None) # Remove the effect
+        self.opacity_effect = None
         self.is_fading = False
-        self.pending_theme = None
+        
+        # Restore the visibility of the function widget if it was visible before
+        if was_visible:
+            self.function_container.setVisible(True)
 
     def _set_theme(self, theme_name):
-        if self.current_theme != theme_name:
-            self.current_theme = theme_name
-            self._apply_theme()
+        """Apply the selected theme."""
+        self.current_theme = theme_name
+        self._apply_theme()
 
     def _create_main_layout(self): # Renamed and modified
         self.splitter = QSplitter(Qt.Horizontal, self)
+        self.splitter.setChildrenCollapsible(False) # Prevent panels from collapsing
+        self.splitter.setHandleWidth(5) # Normal visible handle width
         self.setCentralWidget(self.splitter)
 
-        # Instantiate FileExplorerWidget (left side)
-        self.file_explorer = FileExplorerWidget(self) 
-        self.splitter.addWidget(self.file_explorer)
+        # This container adds a small margin around the file explorer
+        file_explorer_container = QWidget()
+        file_explorer_layout = QVBoxLayout(file_explorer_container)
+        file_explorer_layout.setContentsMargins(5, 5, 2, 5) # Reduced right margin (facing splitter)
+        self.file_explorer = FileExplorerWidget(self)
+        file_explorer_layout.addWidget(self.file_explorer)
+        self.splitter.addWidget(file_explorer_container)
         
         # Create a container for the middle (file processing tab, function widgets, and console)
         middle_container = QWidget()
         middle_layout = QVBoxLayout(middle_container)
-        middle_layout.setContentsMargins(0,0,0,0) # Remove margins for a tighter fit
+        middle_layout.setContentsMargins(2, 5, 2, 5) # Reduced left/right margins (facing splitters)
         middle_layout.setSpacing(5) # Spacing between widgets
 
-        # Instantiate FileProcessingTab 
-        self.file_processing_tab = FileProcessingTab(self) # Pass self if it needs main window reference
-        self.view_mode_changed.connect(self.file_processing_tab.update_view_mode)
+        # This container adds a small margin around the processing tab
+        processing_area_container = QWidget()
+        processing_area_layout = QVBoxLayout(processing_area_container)
+        processing_area_layout.setContentsMargins(0, 0, 0, 0) # Remove double margins
+        self.file_processing_tab = FileProcessingTab(self) # Pass self as app_root
         
-        self.file_explorer.file_selected_for_processing.connect(self.file_processing_tab.add_single_file_from_path)
-        self.file_explorer.file_selected_for_processing.connect(self._on_file_selected_for_function_widgets)
-        self.file_processing_tab.file_selected_for_function_widgets.connect(self._on_file_selected_for_function_widgets)
+        # Connect signal for recently used files
         self.file_processing_tab.files_processed_for_recent_list.connect(self.add_to_recent_files)
-
-        middle_layout.addWidget(self.file_processing_tab)
+        
+        processing_area_layout.addWidget(self.file_processing_tab)
+        processing_area_container.setLayout(processing_area_layout)
+        middle_layout.addWidget(processing_area_container)
         
         # Create container for PDF function widgets
         self.function_container = QWidget()
         self.function_container.setVisible(False)  # Initially hidden
         self.function_layout = QVBoxLayout(self.function_container)
-        self.function_layout.setContentsMargins(5, 5, 5, 5)
+        self.function_layout.setContentsMargins(0, 0, 0, 0) # No margins - handled by widget itself
         
         # Create widgets for PDF functions
         self._create_function_widgets()
         
         middle_layout.addWidget(self.function_container)
+        
+        # Create Start button container with consistent margins
+        self.start_button_container = QWidget()
+        self.start_button_container.setVisible(False)  # Initially hidden
+        start_button_layout = QHBoxLayout(self.start_button_container)
+        start_button_layout.setContentsMargins(0, 0, 0, 0) # No double margins
+        
+        # Create Start button
+        self.start_button = QPushButton("Start")
+        # The connection will be to a method in file_processing_tab
+        self.start_button.clicked.connect(self.file_processing_tab.handle_unified_action)
+        start_button_layout.addWidget(self.start_button)
+        
+        middle_layout.addWidget(self.start_button_container)
         
         middle_layout.addStretch(1)
 
@@ -638,8 +661,14 @@ class MainWindow(QMainWindow):
         
         # Import and instantiate RecentFilesWidget (right side) with console
         from gui.recent_files_widget import RecentFilesWidget
+        
+        # Create container for recent files widget with consistent margins
+        recent_files_container = QWidget()
+        recent_files_layout = QVBoxLayout(recent_files_container)
+        recent_files_layout.setContentsMargins(2, 5, 5, 5) # Reduced left margin (facing splitter)
         self.recent_files_widget = RecentFilesWidget(self, self.console_output)
-        self.splitter.addWidget(self.recent_files_widget)
+        recent_files_layout.addWidget(self.recent_files_widget)
+        self.splitter.addWidget(recent_files_container)
         
         # Set initial sizes for the splitter panes: left explorer, middle content, right activities panel
         self.splitter.setSizes([300, 600, 300]) # Explorer, Middle Container, Activities Panel (Recent Files + Console)
@@ -655,25 +684,27 @@ class MainWindow(QMainWindow):
         # Import for PDFAdvancedOperationsWidget should already be at the top
         
         # Create header with close button
-        header_layout = QHBoxLayout()
-        self.function_title = QLabel("")
-        self.function_title.setStyleSheet("font-weight: bold; font-size: 14px; margin: 5px;")
-        header_layout.addWidget(self.function_title)
+        function_title_bar = QWidget()
+        function_title_bar.setObjectName("functionTitleBar")
+        function_title_bar_layout = QHBoxLayout(function_title_bar)
+        function_title_bar_layout.setContentsMargins(5, 0, 5, 0) # L, T, R, B - Consistent left/right margins
+        self.function_title_label = QLabel("Funktion")
+        self.function_title_label.setObjectName("functionTitleLabel")
         
-        header_layout.addStretch()
+        function_title_bar_layout.addWidget(self.function_title_label, 1, Qt.AlignmentFlag.AlignLeft)
         
-        close_button = QPushButton("✕")
-        close_button.setFixedSize(25, 25)
-        close_button.setStyleSheet("QPushButton { border: none; font-weight: bold; } QPushButton:hover { background-color: #ff6b6b; color: white; }")
-        close_button.clicked.connect(self._hide_function_widget)
-        header_layout.addWidget(close_button)
-        
-        self.function_layout.addLayout(header_layout)
+        function_container_main_layout = QVBoxLayout()
+        function_container_main_layout.setContentsMargins(0, 0, 0, 0) # No margins for title bar area
+        function_container_main_layout.addWidget(function_title_bar)
+
+        # This layout will hold the actual function widgets (e.g. password, edit, etc.)
+        self.function_container_layout = QVBoxLayout()
+        self.function_container_layout.setContentsMargins(0, 0, 0, 0) # No margins - handled by outer container
         
         # Create stacked widget to hold different function widgets
         from PySide6.QtWidgets import QStackedWidget
         self.function_stack = QStackedWidget()
-        self.function_layout.addWidget(self.function_stack)
+        self.function_container_layout.addWidget(self.function_stack)
         
         # Create individual function widgets
         # self.password_widget = PDFPasswordWidget(self) # Removed
@@ -695,6 +726,9 @@ class MainWindow(QMainWindow):
         }
         # Ensure no other comments or definitions exist here until the method ends.
 
+        function_container_main_layout.addLayout(self.function_container_layout)
+        self.function_layout.addLayout(function_container_main_layout)
+
     def _show_function_widget(self, widget_name, force_animation=False):
         """Show specific function widget with fade-in animation"""
         if widget_name in self.widget_map: # Corrected: Check in self.widget_map
@@ -705,7 +739,7 @@ class MainWindow(QMainWindow):
                               self.current_widget_name != widget_name)
             
             self.function_stack.setCurrentIndex(self.widget_map[widget_name]) # Corrected: Use self.widget_map to get index
-            self.function_title.setText(self.widget_titles[widget_name])
+            self.function_title_label.setText(self.widget_titles[widget_name])
             self.current_widget_name = widget_name  # Track current widget
             
             # Create fade-in animation for the function container
@@ -735,6 +769,10 @@ class MainWindow(QMainWindow):
     def _hide_function_widget(self):
         """Hide function widget container"""
         self.function_container.setVisible(False)
+        # Hide the start button as well
+        if hasattr(self, 'start_button_container'):
+            self.start_button_container.setVisible(False)
+            
         # Clear button highlighting when closing function widget
         self._clear_button_highlighting()
         # Reset current widget tracking
@@ -751,15 +789,22 @@ class MainWindow(QMainWindow):
             bg_color = "#3F4042"
             text_color = "#CCCCCC"
             border_color = "#555559"
+            input_bg_color = "#2b2b2b"  # Use darker background color for input fields
+            input_text_color = "#CCCCCC"
+            placeholder_color = "#888888"
         else:
             bg_color = "#FFFFFF"
             text_color = "#333333"
             border_color = "#D0D0D0"
+            input_bg_color = "#FFFFFF"
+            input_text_color = "#333333"
+            placeholder_color = "#999999"
         
         self.function_container.setStyleSheet(f"""
             QWidget {{
                 background-color: {bg_color};
                 color: {text_color};
+                border-radius: 4px;
             }}
             QGroupBox {{
                 border: none;
@@ -783,6 +828,22 @@ class MainWindow(QMainWindow):
                 width: 13px;
                 height: 13px;
                 margin-right: 5px;
+            }}
+            QLineEdit {{
+                background-color: {input_bg_color} !important;
+                color: {input_text_color} !important;
+                border: 1px solid {border_color};
+                border-radius: 4px;
+                padding: 6px 8px;
+                selection-background-color: #0078D4;
+                selection-color: white;
+            }}
+            QLineEdit:focus {{
+                border: 2px solid #0078D4;
+            }}
+            QLineEdit:disabled {{
+                background-color: {bg_color};
+                color: {placeholder_color};
             }}
         """)
         
@@ -1008,6 +1069,9 @@ if __name__ == "__main__":
     app.setOrganizationName("PDF Tools")
     
     main_win = MainWindow()
+    main_win.show()
+    # Initial _apply_theme is now called from MainWindow's showEvent
+    sys.exit(app.exec()) 
     main_win.show()
     # Initial _apply_theme is now called from MainWindow's showEvent
     sys.exit(app.exec()) 

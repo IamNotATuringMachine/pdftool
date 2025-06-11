@@ -1,4 +1,6 @@
 import os
+import platform
+import subprocess
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QTreeView, QListView, 
     QFileSystemModel, QFileDialog, QLabel, QFrame, QMessageBox,
@@ -18,7 +20,8 @@ class FileExplorerWidget(QWidget):
         self.current_root_path = QDir.rootPath()  # Shows drives on Windows
 
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(5, 5, 5, 5) # Reduced margins
+        # Remove internal margins since the widget is wrapped in a container with margins
+        self.layout.setContentsMargins(0, 0, 0, 0) 
         self.layout.setSpacing(5) # Reduced spacing
 
 
@@ -76,6 +79,7 @@ class FileExplorerWidget(QWidget):
 
         # Connect double click to a handler
         self.tree_view.doubleClicked.connect(self._tree_item_double_clicked)
+        self.tree_view.clicked.connect(self._tree_item_clicked)
 
         # Expand to show user's home directory by default
         user_home = QDir.homePath()
@@ -103,8 +107,8 @@ class FileExplorerWidget(QWidget):
                 
                 # Log the navigation
                 folder_name = os.path.basename(location_path) or location_path
-                if hasattr(self.main_window, 'log_message'):
-                    self.main_window.log_message(f"Navigiert zu: {folder_name}")
+                # if hasattr(self.main_window, 'log_message'):
+                #     self.main_window.log_message(f"Navigiert zu: {folder_name}")
             else:
                 if hasattr(self.main_window, 'log_message'):
                     self.main_window.log_message("Fehler: Standardordner nicht gefunden")
@@ -132,27 +136,45 @@ class FileExplorerWidget(QWidget):
             
             # Log the navigation
             folder_name = os.path.basename(new_path) or new_path
-            if hasattr(self.main_window, 'log_message'):
-                self.main_window.log_message(f"Benutzerdefinierten Ordner ausgewählt: {folder_name}")
+            # if hasattr(self.main_window, 'log_message'):
+            #     self.main_window.log_message(f"Benutzerdefinierten Ordner ausgewählt: {folder_name}")
+
+    def _tree_item_clicked(self, index):
+        """Handle single-click on a tree item."""
+        if self.file_system_model.isDir(index):
+            # For directories, expand/collapse them on single click
+            folder_name = self.file_system_model.fileName(index)
+            if self.tree_view.isExpanded(index):
+                self.tree_view.collapse(index)
+                # if hasattr(self.main_window, 'log_message'):
+                #     self.main_window.log_message(f"Ordner eingeklappt: {folder_name}")
+            else:
+                self.tree_view.expand(index)
+                # if hasattr(self.main_window, 'log_message'):
+                #     self.main_window.log_message(f"Ordner aufgeklappt: {folder_name}")
 
     def _tree_item_double_clicked(self, index):
         file_path = self.file_system_model.filePath(index)
-        if os.path.isfile(file_path) and file_path.lower().endswith('.pdf'):
-            filename = os.path.basename(file_path)
-            if hasattr(self.main_window, 'log_message'):
-                self.main_window.log_message(f"PDF-Datei aus Explorer hinzugefügt: {filename}")
-            self.file_selected_for_processing.emit(file_path)
+        if os.path.isfile(file_path):
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(os.path.abspath(file_path))
+                elif platform.system() == "Darwin":
+                    subprocess.run(["open", os.path.abspath(file_path)])
+                else:
+                    subprocess.run(["xdg-open", os.path.abspath(file_path)])
+                
+                filename = os.path.basename(file_path)
+                if hasattr(self.main_window, 'log_message'):
+                    self.main_window.log_message(f"Datei geöffnet: {filename}")
+            except Exception as e:
+                filename = os.path.basename(file_path)
+                if hasattr(self.main_window, 'log_message'):
+                    self.main_window.log_message(f"Fehler beim Öffnen von '{filename}': {e}")
+                QMessageBox.warning(self, "Datei öffnen Fehler", f"Die Datei '{file_path}' konnte nicht geöffnet werden.\\nFehler: {e}")
         elif os.path.isdir(file_path):
-            # For directories, expand/collapse them
-            folder_name = os.path.basename(file_path) or file_path
-            if self.tree_view.isExpanded(index):
-                self.tree_view.collapse(index)
-                if hasattr(self.main_window, 'log_message'):
-                    self.main_window.log_message(f"Ordner eingeklappt: {folder_name}")
-            else:
-                self.tree_view.expand(index)
-                if hasattr(self.main_window, 'log_message'):
-                    self.main_window.log_message(f"Ordner aufgeklappt: {folder_name}")
+            # Double-clicking a directory now does nothing, as single-click handles expansion
+            pass
 
 
 
